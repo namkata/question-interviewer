@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: question_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Map migrations to init script if we wanted auto-init, but we use 'migrate' tool usually.
+      # For simplicity, we keep it as is.
+
+  migration:
+    build:
+      context: ../
+      dockerfile: infra/migration/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_started
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=user
+      - DB_PASSWORD=password
+      - DB_NAME=question_db
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://user:password@postgres:5432/question_db?sslmode=disable"
+      - "up"
+    restart: on-failure
+
+  ai-service:
+    build:
+      context: ../services/ai-service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=postgres
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - LLM_PROVIDER=groq
+    depends_on:
+      - postgres
+
+  practice-service:
+    build:
+      context: ../services/practice-service
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=user
+      - DB_PASSWORD=password
+      - DB_NAME=question_db
+      - AI_SERVICE_URL=http://ai-service:8000
+    depends_on:
+      - postgres
+      - ai-service
+
+  bff-service:
+    build:
+      context: ../services/bff-service
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      - PRACTICE_SERVICE_URL=http://practice-service:8080
+      - PORT=8081
+    depends_on:
+      - practice-service
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - bff-service
+
+volumes:
+  postgres_data:

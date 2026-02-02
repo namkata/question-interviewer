@@ -1,0 +1,67 @@
+package domain
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type PracticeSession struct {
+	ID        uuid.UUID  `json:"id"`
+	UserID    uuid.UUID  `json:"user_id"`
+	Score     int        `json:"score"`
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at"` // Pointer to allow null
+	Status    string     `json:"status"`   // e.g., "in_progress", "completed"
+}
+
+type PracticeAttempt struct {
+	ID         uuid.UUID `json:"id"`
+	SessionID  uuid.UUID `json:"session_id"`
+	QuestionID uuid.UUID `json:"question_id"`
+	UserAnswer string    `json:"user_answer"`
+	Score      int       `json:"score"`    // 0-100 from AI
+	Feedback   string    `json:"feedback"` // Markdown from AI
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type Question struct {
+	ID            uuid.UUID `json:"id"`
+	Content       string    `json:"content"`
+	TopicID       *uuid.UUID `json:"topic_id"` // Simplified for now
+	Level         string    `json:"level"`
+	CorrectAnswer string    `json:"correct_answer"`
+	CreatedAt     time.Time `json:"created_at"`
+	// We might need to handle Topic string vs ID, but for now let's assume simple string mapping or null
+	TopicName string `json:"topic"` // Helper for now
+}
+
+func NewQuestion(content, topic, level string) *Question {
+	return &Question{
+		ID:        uuid.New(),
+		Content:   content,
+		TopicName: topic,
+		Level:     level,
+		CreatedAt: time.Now(),
+	}
+}
+
+func NewPracticeSession(userID uuid.UUID) *PracticeSession {
+	return &PracticeSession{
+		ID:        uuid.New(),
+		UserID:    userID,
+		Score:     0,
+		StartedAt: time.Now(),
+		Status:    "in_progress",
+	}
+}
+
+func NewPracticeAttempt(sessionID, questionID uuid.UUID, userAnswer string) *PracticeAttempt {
+	return &PracticeAttempt{
+		ID:         uuid.New(),
+		SessionID:  sessionID,
+		QuestionID: questionID,
+		UserAnswer: userAnswer,
+		CreatedAt:  time.Now(),
+	}
+}

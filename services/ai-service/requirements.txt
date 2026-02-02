@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+langchain
+# langchain-google-genai
+langchain-groq
+# langchain-openai # Commenting out to avoid tiktoken build issues on Py3.14 without Rust
+python-dotenv
+requests
