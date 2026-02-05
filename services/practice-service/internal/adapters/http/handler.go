@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,9 +20,11 @@ func NewPracticeHandler(service ports.PracticeService) *PracticeHandler {
 }
 
 type StartSessionRequest struct {
-	UserID  string  `json:"user_id" binding:"required"`
-	TopicID *string `json:"topic_id"`
-	Level   *string `json:"level"`
+	UserID   string                 `json:"user_id" binding:"required"`
+	TopicID  *string                `json:"topic_id"`
+	Level    *string                `json:"level"`
+	Language string                 `json:"language"`
+	Config   map[string]interface{} `json:"config"`
 }
 
 type SubmitAnswerRequest struct {
@@ -58,7 +61,7 @@ func (h *PracticeHandler) StartSession(c *gin.Context) {
 		topicID = &id
 	}
 
-	session, firstQuestionID, err := h.service.StartSession(c.Request.Context(), userID, topicID, req.Level)
+	session, firstQuestionID, err := h.service.StartSession(c.Request.Context(), userID, topicID, req.Level, req.Language, req.Config)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -132,17 +135,67 @@ func (h *PracticeHandler) GetQuestion(c *gin.Context) {
 		return
 	}
 
-	content, topic, level, _, err := h.service.GetQuestion(c.Request.Context(), questionID)
+	content, topic, level, correctAnswer, hint, err := h.service.GetQuestion(c.Request.Context(), questionID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":      questionID,
-		"content": content,
-		"topic":   topic,
-		"level":   level,
+		"id":             questionID,
+		"content":        content,
+		"topic":          topic,
+		"level":          level,
+		"correct_answer": correctAnswer,
+		"hint":           hint,
+	})
+}
+
+func (h *PracticeHandler) SkipRound(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := uuid.Parse(sessionIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid session ID format"})
+		return
+	}
+
+	nextQuestionID, err := h.service.SkipCurrentRound(c.Request.Context(), sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"next_question_id": nextQuestionID,
+	})
+}
+
+func (h *PracticeHandler) GetRandomQuestionForSession(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := uuid.Parse(sessionIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid session ID format"})
+		return
+	}
+
+	topic := c.Query("topic")
+	var topicPtr *string
+	if topic != "" {
+		topicPtr = &topic
+	}
+
+	questionID, err := h.service.GetRandomQuestion(c.Request.Context(), sessionID, topicPtr)
+	if err != nil {
+		if strings.Contains(err.Error(), "topic not found") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"question_id": questionID,
 	})
 }
 
@@ -152,6 +205,8 @@ func (h *PracticeHandler) RegisterRoutes(r *gin.Engine) {
 		api.POST("/sessions", h.StartSession)
 		api.GET("/sessions/:id", h.GetSession)
 		api.POST("/sessions/:id/answers", h.SubmitAnswer)
+		api.POST("/sessions/:id/skip", h.SkipRound)
+		api.GET("/sessions/:id/questions/random", h.GetRandomQuestionForSession)
 		api.GET("/questions/:id", h.GetQuestion)
 		api.POST("/questions", h.CreateQuestion)
 	}
@@ -163,6 +218,7 @@ type CreateQuestionRequest struct {
 	Topic         string `json:"topic" binding:"required"`
 	Level         string `json:"level" binding:"required"`
 	CorrectAnswer string `json:"correct_answer"`
+	Hint          string `json:"hint"`
 }
 
 func (h *PracticeHandler) CreateQuestion(c *gin.Context) {
@@ -172,7 +228,7 @@ func (h *PracticeHandler) CreateQuestion(c *gin.Context) {
 		return
 	}
 
-	question, err := h.service.CreateQuestion(c.Request.Context(), req.Content, req.Topic, req.Level, req.CorrectAnswer)
+	question, err := h.service.CreateQuestion(c.Request.Context(), req.Content, req.Topic, req.Level, req.CorrectAnswer, req.Hint)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

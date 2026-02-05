@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union, List
 import httpx
 
 class BaseCrawler(ABC):
@@ -8,9 +8,9 @@ class BaseCrawler(ABC):
         pass
 
     @abstractmethod
-    async def extract(self, url: str) -> Dict[str, Any]:
+    async def extract(self, url: str) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """
-        Returns a dictionary with:
+        Returns a dictionary or list of dictionaries with:
         - title: str
         - content: str (markdown or text)
         - source: str

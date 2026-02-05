@@ -20,11 +20,15 @@ func NewQuestionHandler(service ports.QuestionService) *QuestionHandler {
 }
 
 type CreateQuestionRequest struct {
-	Title     string `json:"title" binding:"required"`
-	Content   string `json:"content" binding:"required"`
-	Level     string `json:"level" binding:"required"`
-	TopicID   string `json:"topic_id" binding:"required,uuid"`
-	CreatedBy string `json:"created_by" binding:"required,uuid"` // TODO: Get from context/auth
+	Title         string `json:"title" binding:"required"`
+	Content       string `json:"content" binding:"required"`
+	Level         string `json:"level" binding:"required"`
+	Language      string `json:"language"`
+	Role          string `json:"role"`
+	Hint          string `json:"hint"`
+	CorrectAnswer string `json:"correct_answer"`
+	TopicID       string `json:"topic_id" binding:"required,uuid"`
+	CreatedBy     string `json:"created_by" binding:"required,uuid"` // TODO: Get from context/auth
 }
 
 // CreateQuestion godoc
@@ -55,7 +59,12 @@ func (h *QuestionHandler) CreateQuestion(c *gin.Context) {
 		return
 	}
 
-	question, err := h.service.CreateQuestion(c.Request.Context(), req.Title, req.Content, req.Level, topicID, createdBy)
+	language := req.Language
+	if language == "" {
+		language = "en"
+	}
+
+	question, err := h.service.CreateQuestion(c.Request.Context(), req.Title, req.Content, req.Level, language, req.Role, req.Hint, req.CorrectAnswer, topicID, createdBy)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -116,11 +125,77 @@ func (h *QuestionHandler) ListQuestions(c *gin.Context) {
 	c.JSON(http.StatusOK, questions)
 }
 
+type CreateTopicRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+}
+
+// CreateTopic godoc
+// @Summary Create a new topic
+// @Description Create a new topic
+// @Tags topics
+// @Accept json
+// @Produce json
+// @Param topic body CreateTopicRequest true "Topic Data"
+// @Success 201 {object} domain.Topic
+// @Router /topics [post]
+func (h *QuestionHandler) CreateTopic(c *gin.Context) {
+	var req CreateTopicRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	topic, err := h.service.CreateTopic(c.Request.Context(), req.Name, req.Description)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, topic)
+}
+
+// ListTopics godoc
+// @Summary List topics
+// @Description List all topics
+// @Tags topics
+// @Accept json
+// @Produce json
+// @Success 200 {array} domain.Topic
+// @Router /topics [get]
+func (h *QuestionHandler) ListTopics(c *gin.Context) {
+	name := c.Query("name")
+	if name != "" {
+		topic, err := h.service.GetTopicByName(c.Request.Context(), name)
+		if err != nil {
+			if err.Error() == "topic not found" {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Topic not found"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			}
+			return
+		}
+		c.JSON(http.StatusOK, []interface{}{topic})
+		return
+	}
+
+	topics, err := h.service.ListTopics(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, topics)
+}
+
 func (h *QuestionHandler) RegisterRoutes(router *gin.Engine) {
 	v1 := router.Group("/api/v1")
 	{
 		v1.POST("/questions", h.CreateQuestion)
 		v1.GET("/questions/:id", h.GetQuestion)
 		v1.GET("/questions", h.ListQuestions)
+
+		v1.POST("/topics", h.CreateTopic)
+		v1.GET("/topics", h.ListTopics)
 	}
 }

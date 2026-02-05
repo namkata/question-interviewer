@@ -24,14 +24,18 @@ func NewQuestionRepository(db *sql.DB) ports.QuestionRepository {
 
 func (r *QuestionRepository) Create(ctx context.Context, question *domain.Question) error {
 	query := `
-		INSERT INTO questions (id, title, content, level, topic_id, created_by, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO questions (id, title, content, level, language, role, hint, correct_answer, topic_id, created_by, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		question.ID,
 		question.Title,
 		question.Content,
 		question.Level,
+		question.Language,
+		question.Role,
+		question.Hint,
+		question.CorrectAnswer,
 		question.TopicID,
 		question.CreatedBy,
 		question.Status,
@@ -46,7 +50,20 @@ func (r *QuestionRepository) Create(ctx context.Context, question *domain.Questi
 
 func (r *QuestionRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Question, error) {
 	query := `
-		SELECT id, title, content, level, topic_id, created_by, status, created_at, updated_at
+		SELECT 
+			id, 
+			title, 
+			content, 
+			level, 
+			language, 
+			COALESCE(role, '') AS role,
+			COALESCE(hint, '') AS hint,
+			COALESCE(correct_answer, '') AS correct_answer,
+			topic_id, 
+			COALESCE(created_by, '00000000-0000-0000-0000-000000000000') AS created_by, 
+			status, 
+			created_at, 
+			updated_at
 		FROM questions
 		WHERE id = $1
 	`
@@ -58,6 +75,10 @@ func (r *QuestionRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain
 		&q.Title,
 		&q.Content,
 		&q.Level,
+		&q.Language,
+		&q.Role,
+		&q.Hint,
+		&q.CorrectAnswer,
 		&q.TopicID,
 		&q.CreatedBy,
 		&q.Status,
@@ -75,7 +96,20 @@ func (r *QuestionRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain
 
 func (r *QuestionRepository) List(ctx context.Context, limit, offset int) ([]*domain.Question, error) {
 	query := `
-		SELECT id, title, content, level, topic_id, created_by, status, created_at, updated_at
+		SELECT 
+			id, 
+			title, 
+			content, 
+			level, 
+			language, 
+			COALESCE(role, '') AS role,
+			COALESCE(hint, '') AS hint,
+			COALESCE(correct_answer, '') AS correct_answer,
+			topic_id, 
+			COALESCE(created_by, '00000000-0000-0000-0000-000000000000') AS created_by, 
+			status, 
+			created_at, 
+			updated_at
 		FROM questions
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
@@ -94,6 +128,10 @@ func (r *QuestionRepository) List(ctx context.Context, limit, offset int) ([]*do
 			&q.Title,
 			&q.Content,
 			&q.Level,
+			&q.Language,
+			&q.Role,
+			&q.Hint,
+			&q.CorrectAnswer,
 			&q.TopicID,
 			&q.CreatedBy,
 			&q.Status,
@@ -104,6 +142,9 @@ func (r *QuestionRepository) List(ctx context.Context, limit, offset int) ([]*do
 			return nil, fmt.Errorf("failed to scan question: %w", err)
 		}
 		questions = append(questions, &q)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
 	}
 	return questions, nil
 }

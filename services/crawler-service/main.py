@@ -1,15 +1,16 @@
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Union, Any
 from sqlalchemy.orm import Session
 
 from database import get_db, engine, Base
-from models import CrawledQuestion
+from models import CrawledQuestion, Question, Topic
 from normalizer import Normalizer
 
 from crawlers.github import GitHubCrawler
 from crawlers.blog import BlogCrawler
 from crawlers.generic import GenericCrawler
+from crawlers.vietnam_market import VietnamMarketCrawler
 
 # Create tables if not exist (for dev simplicity, usually managed by migrations)
 # Base.metadata.create_all(bind=engine)
@@ -24,6 +25,7 @@ class CrawledQuestionResponse(BaseModel):
     title: str
     source: str
     detected_topic: Optional[str]
+    detected_role: Optional[str]
     detected_level: Optional[str]
     status: str
     
@@ -40,6 +42,7 @@ async def crawl_url(request: CrawlRequest, db: Session = Depends(get_db)):
     
     # 1. Factory Pattern to select crawler
     crawlers = [
+        VietnamMarketCrawler(),
         GitHubCrawler(),
         BlogCrawler(),
         GenericCrawler()
@@ -56,70 +59,89 @@ async def crawl_url(request: CrawlRequest, db: Session = Depends(get_db)):
         
     try:
         # 2. Extract
-        raw_data = await selected_crawler.extract(url)
+        raw_data_result = await selected_crawler.extract(url)
         
-        # 3. Normalize & Classify
-        normalized_content = Normalizer.normalize_content(raw_data.get("content", ""))
-        detected_topic = Normalizer.detect_topic(raw_data.get("title", ""), normalized_content)
-        detected_level = Normalizer.detect_level(raw_data.get("title", ""), normalized_content)
+        # Ensure list for consistent processing
+        items = raw_data_result if isinstance(raw_data_result, list) else [raw_data_result]
         
-        # 4. Store to Staging DB
-        db_item = CrawledQuestion(
-            source=raw_data.get("source"),
-            raw_title=raw_data.get("title"),
-            raw_content=normalized_content,
-            url=raw_data.get("url"),
-            detected_topic=detected_topic,
-            detected_level=detected_level,
-            status="pending"
-        )
-        db.add(db_item)
+        saved_items = []
+        
+        for raw_data in items:
+            # 3. Normalize & Classify
+            normalized_content = Normalizer.normalize_content(raw_data.get("content", ""))
+            
+            # Use metadata from crawler if available, otherwise detect
+            detected_topic = raw_data.get("meta_topic")
+            if not detected_topic:
+                detected_topic = Normalizer.detect_topic(raw_data.get("title", ""), normalized_content)
+            
+            detected_level = raw_data.get("meta_level")
+            if not detected_level:
+                detected_level = Normalizer.detect_level(raw_data.get("title", ""), normalized_content)
+                
+            detected_role = raw_data.get("meta_role")
+            if not detected_role:
+                detected_role = Normalizer.detect_role(raw_data.get("title", ""), normalized_content)
+            
+            # 4. Store to Staging DB
+            db_item = CrawledQuestion(
+                source=raw_data.get("source"),
+                raw_title=raw_data.get("title"),
+                raw_content=normalized_content,
+                url=raw_data.get("url"),
+                detected_topic=detected_topic,
+                detected_role=detected_role,
+                detected_level=detected_level,
+                status="pending"
+            )
+            db.add(db_item)
+            saved_items.append(db_item)
+            
         db.commit()
-        db.refresh(db_item)
         
-        return {"status": "success", "data": {
-            "id": str(db_item.id),
-            "title": db_item.raw_title,
-            "topic": db_item.detected_topic,
-            "level": db_item.detected_level
-        }}
+        return {"message": f"Successfully crawled {len(saved_items)} items"}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/crawled-questions", response_model=List[CrawledQuestionResponse])
-def list_crawled_questions(status: str = "pending", limit: int = 10, db: Session = Depends(get_db)):
-    questions = db.query(CrawledQuestion).filter(CrawledQuestion.status == status).limit(limit).all()
-    # Manual conversion to pydantic friendly dict if needed, or rely on orm_mode
-    return [
-        CrawledQuestionResponse(
-            id=str(q.id),
-            title=q.raw_title,
-            source=q.source,
-            detected_topic=q.detected_topic,
-            detected_level=q.detected_level,
-            status=q.status
-        ) for q in questions
-    ]
-
 @app.post("/crawled-questions/{question_id}/approve")
 def approve_question(question_id: str, db: Session = Depends(get_db)):
-    # In a real system, this might trigger a call to Question Service to create a real question
-    # For now, we just mark it as approved in staging
-    question = db.query(CrawledQuestion).filter(CrawledQuestion.id == question_id).first()
-    if not question:
-        raise HTTPException(status_code=404, detail="Question not found")
+    # Find crawled question
+    crawled = db.query(CrawledQuestion).filter(CrawledQuestion.id == question_id).first()
+    if not crawled:
+        raise HTTPException(status_code=404, detail="Crawled question not found")
     
-    question.status = "approved"
-    db.commit()
-    return {"status": "approved", "id": question_id}
-
-@app.post("/crawled-questions/{question_id}/reject")
-def reject_question(question_id: str, db: Session = Depends(get_db)):
-    question = db.query(CrawledQuestion).filter(CrawledQuestion.id == question_id).first()
-    if not question:
-        raise HTTPException(status_code=404, detail="Question not found")
+    if crawled.status == "approved":
+        return {"message": "Question already approved"}
+        
+    # Find or Create Topic
+    topic_name = crawled.detected_topic or "General"
+    topic = db.query(Topic).filter(Topic.name == topic_name).first()
+    if not topic:
+        topic = Topic(name=topic_name, description=f"Topic {topic_name}")
+        db.add(topic)
+        db.flush() # get ID
+        
+    # Determine Language
+    language = "en"
+    if crawled.source == "Vietnam IT Job Market":
+        language = "vi"
+        
+    # Create Question
+    new_question = Question(
+        title=crawled.raw_title,
+        content=crawled.raw_content or "",
+        level=crawled.detected_level,
+        language=language,
+        role=crawled.detected_role,
+        topic_id=topic.id,
+        status="published"
+    )
+    db.add(new_question)
     
-    question.status = "rejected"
+    # Update Status
+    crawled.status = "approved"
+    
     db.commit()
-    return {"status": "rejected", "id": question_id}
+    
+    return {"message": "Question approved and published", "question_id": str(new_question.id)}

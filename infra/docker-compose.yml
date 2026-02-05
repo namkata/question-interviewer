@@ -31,6 +31,32 @@ services:
       - "up"
     restart: on-failure
 
+  crawler-service:
+    build:
+      context: ../services/crawler-service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/question_db
+    depends_on:
+      - postgres
+
+  question-service:
+    build:
+      context: ../services/question-service
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8080"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=user
+      - DB_PASSWORD=password
+      - DB_NAME=question_db
+    depends_on:
+      - postgres
+
   ai-service:
     build:
       context: ../services/ai-service

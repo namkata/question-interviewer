@@ -28,6 +28,7 @@ func NewAIClient(baseURL string) ports.AIService {
 type EvaluationRequest struct {
 	QuestionContent string `json:"question_content"`
 	UserAnswer      string `json:"user_answer"`
+	CorrectAnswer   string `json:"correct_answer,omitempty"`
 	Topic           string `json:"topic"`
 	Level           string `json:"level"`
 	Language        string `json:"language"`
@@ -40,10 +41,11 @@ type EvaluationResponse struct {
 	ImprovedAnswer string   `json:"improved_answer"`
 }
 
-func (c *AIClient) EvaluateAnswer(ctx context.Context, question, userAnswer, topic, level, language string) (int, string, []string, string, error) {
+func (c *AIClient) EvaluateAnswer(ctx context.Context, question, userAnswer, correctAnswer, topic, level, language string) (int, string, []string, string, error) {
 	reqBody := EvaluationRequest{
 		QuestionContent: question,
 		UserAnswer:      userAnswer,
+		CorrectAnswer:   correctAnswer,
 		Topic:           topic,
 		Level:           level,
 		Language:        language,

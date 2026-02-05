@@ -58,12 +58,13 @@ func main() {
 
 	// Dependency Injection
 	repo := postgres.NewQuestionRepository(db)
-	svc := services.NewQuestionService(repo)
+	topicRepo := postgres.NewTopicRepository(db)
+	svc := services.NewQuestionService(repo, topicRepo)
 	handler := http_adapter.NewQuestionHandler(svc)
 
 	// Router Setup
 	r := gin.Default()
-	
+
 	// CORS Middleware (Basic)
 	r.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
@@ -79,7 +80,7 @@ func main() {
 	r.GET("/health", func(c *gin.Context) {
 		c.String(200, "OK")
 	})
-	
+
 	handler.RegisterRoutes(r)
 
 	// Start Server

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -22,17 +23,26 @@ func NewPracticeRepository(db *sql.DB) ports.PracticeRepository {
 }
 
 func (r *PracticeRepository) CreateSession(ctx context.Context, session *domain.PracticeSession) error {
+	configJSON, err := json.Marshal(session.Config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session config: %w", err)
+	}
+
 	query := `
-		INSERT INTO practice_sessions (id, user_id, score, started_at, ended_at, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO practice_sessions (id, user_id, score, started_at, ended_at, status, topic_id, level, language, config)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`
-	_, err := r.db.ExecContext(ctx, query,
+	_, err = r.db.ExecContext(ctx, query,
 		session.ID,
 		session.UserID,
 		session.Score,
 		session.StartedAt,
 		session.EndedAt,
 		session.Status,
+		session.TopicID,
+		session.Level,
+		session.Language,
+		configJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create practice session: %w", err)
@@ -42,13 +52,15 @@ func (r *PracticeRepository) CreateSession(ctx context.Context, session *domain.
 
 func (r *PracticeRepository) GetSession(ctx context.Context, id uuid.UUID) (*domain.PracticeSession, error) {
 	query := `
-		SELECT id, user_id, score, started_at, ended_at, status
+		SELECT id, user_id, score, started_at, ended_at, status, topic_id, level, language, config
 		FROM practice_sessions
 		WHERE id = $1
 	`
 	row := r.db.QueryRowContext(ctx, query, id)
 
 	var s domain.PracticeSession
+	var configJSON []byte
+
 	err := row.Scan(
 		&s.ID,
 		&s.UserID,
@@ -56,6 +68,10 @@ func (r *PracticeRepository) GetSession(ctx context.Context, id uuid.UUID) (*dom
 		&s.StartedAt,
 		&s.EndedAt,
 		&s.Status,
+		&s.TopicID,
+		&s.Level,
+		&s.Language,
+		&configJSON,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -63,19 +79,34 @@ func (r *PracticeRepository) GetSession(ctx context.Context, id uuid.UUID) (*dom
 		}
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
+
+	if configJSON != nil {
+		if err := json.Unmarshal(configJSON, &s.Config); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal session config: %w", err)
+		}
+	} else {
+		s.Config = make(map[string]interface{})
+	}
+
 	return &s, nil
 }
 
 func (r *PracticeRepository) UpdateSession(ctx context.Context, session *domain.PracticeSession) error {
+	configJSON, err := json.Marshal(session.Config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session config: %w", err)
+	}
+
 	query := `
 		UPDATE practice_sessions
-		SET score = $1, ended_at = $2, status = $3
-		WHERE id = $4
+		SET score = $1, ended_at = $2, status = $3, config = $4
+		WHERE id = $5
 	`
-	_, err := r.db.ExecContext(ctx, query,
+	_, err = r.db.ExecContext(ctx, query,
 		session.Score,
 		session.EndedAt,
 		session.Status,
+		configJSON,
 		session.ID,
 	)
 	if err != nil {
@@ -84,40 +115,135 @@ func (r *PracticeRepository) UpdateSession(ctx context.Context, session *domain.
 	return nil
 }
 
-func (r *PracticeRepository) GetRandomQuestionID(ctx context.Context, topicID *uuid.UUID, level *string) (uuid.UUID, error) {
-	// If topic/level not specified or no questions found with specific level, try broader search
-	query := `SELECT id FROM questions WHERE status = 'published'`
+func (r *PracticeRepository) GetRandomQuestionID(ctx context.Context, topicID *uuid.UUID, level *string, language string, config map[string]interface{}) (uuid.UUID, error) {
+	// Base query
+	query := `SELECT q.id FROM questions q`
+	whereClauses := []string{"q.status = 'published'"}
 	args := []interface{}{}
 	argIdx := 1
 
+	// 1. Topic ID (Direct filter)
 	if topicID != nil {
-		query += fmt.Sprintf(" AND topic_id = $%d", argIdx)
+		whereClauses = append(whereClauses, fmt.Sprintf("q.topic_id = $%d", argIdx))
 		args = append(args, *topicID)
 		argIdx++
 	}
 
-	// Try with level first
-	var finalQuery string
-	var finalArgs []interface{}
+	// 2. Stacks/Roles from Config (Topic Name filter)
+	// If topicID is nil, check if we have stacks in config
+	if topicID == nil && config != nil {
+		// Check for "tech_stacks" (frontend key) or "stacks" (legacy/fallback)
+		var stacksInterface interface{}
+		if s, ok := config["tech_stacks"]; ok {
+			stacksInterface = s
+		} else if s, ok := config["stacks"]; ok {
+			stacksInterface = s
+		}
 
-	if level != nil && *level != "" {
-		levelQuery := query + fmt.Sprintf(" AND level = $%d", argIdx)
-		levelArgs := append(args, *level)
-		finalQuery = levelQuery + " ORDER BY RANDOM() LIMIT 1"
-		finalArgs = levelArgs
+		if stacks, ok := stacksInterface.([]interface{}); ok && len(stacks) > 0 {
+			stackNames := make([]string, len(stacks))
+			for i, s := range stacks {
+				raw := fmt.Sprint(s)
+				// Normalize stack names to match DB topics
+				switch raw {
+				case "Go":
+					stackNames[i] = "Golang"
+				case "Node.js":
+					stackNames[i] = "NodeJS"
+				case "PostgreSQL", "MongoDB", "Redis":
+					stackNames[i] = "Database"
+				case "TypeScript":
+					stackNames[i] = "JavaScript"
+				default:
+					stackNames[i] = raw
+				}
+			}
 
-		// Check if any exist
-		var checkID uuid.UUID
-		err := r.db.QueryRowContext(ctx, finalQuery, finalArgs...).Scan(&checkID)
-		if err == nil {
-			return checkID, nil
+			// Join with topics table if we are filtering by topic name
+			query += ` JOIN topics t ON q.topic_id = t.id`
+
+			whereClauses = append(whereClauses, fmt.Sprintf("t.name = ANY($%d)", argIdx))
+			// ANY needs a pq array compatible format or just passed as slice if driver supports it.
+			// pgx stdlib usually handles []string as text array.
+			args = append(args, stackNames)
+			argIdx++
 		}
 	}
 
-	// If we are here, either level was nil or no questions found for that level.
-	// Fallback: Ignore level, just match topic
-	finalQuery = query + " ORDER BY RANDOM() LIMIT 1"
-	finalArgs = args
+	// 3. Role from Config
+	// NOTE: Only apply role filter if we are NOT in a specific topic round (like DevOps, Behavioral)
+	// OR if the topic implies a specific role.
+	// However, usually DevOps/Behavioral questions should be accessible to all roles.
+	// But in the DB they might be tagged with 'DevOps' role.
+	// If the user is 'BackEnd', filtering by 'BackEnd' or 'Any' will exclude 'DevOps' questions.
+	// Fix: If topicID is present (meaning we are targeting a specific topic), we should be more lenient with Role,
+	// or perhaps ignore Role filter if the Topic itself defines the context.
+	// Let's modify: If TopicID is set, we assume the Topic is the primary filter.
+	// But wait, if Topic is 'Golang', we might still want 'BackEnd' role if there are 'Golang' questions for 'DevOps'?
+	// Actually, for simplicity and to fix the reported issue:
+	// If the round is 'devops_round' (we can check config['round_id']), we should allow 'DevOps' role.
+
+	if config != nil {
+		if role, ok := config["role"].(string); ok && role != "" {
+			// Check if we are in a special round
+			roundID, _ := config["round_id"].(string)
+
+			if roundID == "devops_round" {
+				// Allow candidate role OR 'Any' OR 'DevOps'
+				whereClauses = append(whereClauses, fmt.Sprintf("(q.role = $%d OR q.role = 'Any' OR q.role = 'DevOps')", argIdx))
+				args = append(args, role)
+				argIdx++
+			} else {
+				// Standard behavior
+				whereClauses = append(whereClauses, fmt.Sprintf("(q.role = $%d OR q.role = 'Any')", argIdx))
+				args = append(args, role)
+				argIdx++
+			}
+		}
+	}
+
+	// 4. Language
+	targetLang := "en"
+	if language != "" {
+		targetLang = language
+	}
+	whereClauses = append(whereClauses, fmt.Sprintf("q.language = $%d", argIdx))
+	args = append(args, targetLang)
+	argIdx++
+
+	// Build WHERE string
+	whereStr := " WHERE " + whereClauses[0]
+	for i := 1; i < len(whereClauses); i++ {
+		whereStr += " AND " + whereClauses[i]
+	}
+
+	// 4. Level Logic (With progression, then fallback)
+	if level != nil && *level != "" {
+		targetLevels := []string{*level}
+		switch *level {
+		case "Fresher":
+			targetLevels = append(targetLevels, "Junior")
+		case "Junior":
+			targetLevels = append(targetLevels, "Mid")
+		case "Mid":
+			targetLevels = append(targetLevels, "Senior")
+		}
+
+		levelClause := fmt.Sprintf(" AND (q.level = ANY($%d) OR q.level = 'Any')", argIdx)
+		levelQuery := query + whereStr + levelClause + " ORDER BY RANDOM() LIMIT 1"
+		levelArgs := append(args, targetLevels)
+
+		var checkID uuid.UUID
+		err := r.db.QueryRowContext(ctx, levelQuery, levelArgs...).Scan(&checkID)
+		if err == nil {
+			return checkID, nil
+		}
+		// If not found, fall through to fallback
+	}
+
+	// Fallback: Ignore level
+	finalQuery := query + whereStr + " ORDER BY RANDOM() LIMIT 1"
+	finalArgs := args
 
 	var id uuid.UUID
 	err := r.db.QueryRowContext(ctx, finalQuery, finalArgs...).Scan(&id)
@@ -147,25 +273,25 @@ func (r *PracticeRepository) CreateAttempt(ctx context.Context, attempt *domain.
 	return nil
 }
 
-func (r *PracticeRepository) GetQuestionContent(ctx context.Context, questionID uuid.UUID) (string, string, string, string, error) {
+func (r *PracticeRepository) GetQuestionContent(ctx context.Context, questionID uuid.UUID) (string, string, string, string, string, error) {
 	// Join with topics table to get topic name if needed, but for now assuming we just need question fields
 	// But wait, topic name is in topics table.
 	// Let's assume questions table has content and level.
 	// And we need topic name.
 
 	query := `
-		SELECT q.content, t.name, q.level, COALESCE(q.correct_answer, '')
+		SELECT q.content, t.name, q.level, COALESCE(q.correct_answer, ''), COALESCE(q.hint, '')
 		FROM questions q
 		LEFT JOIN topics t ON q.topic_id = t.id
 		WHERE q.id = $1
 	`
-	var content, topic, level, correctAnswer string
+	var content, topic, level, correctAnswer, hint string
 	// Handle potential NULLs if topic is missing
 	var topicName sql.NullString
 
 	row := r.db.QueryRowContext(ctx, query, questionID)
-	if err := row.Scan(&content, &topicName, &level, &correctAnswer); err != nil {
-		return "", "", "", "", fmt.Errorf("failed to get question content: %w", err)
+	if err := row.Scan(&content, &topicName, &level, &correctAnswer, &hint); err != nil {
+		return "", "", "", "", "", fmt.Errorf("failed to get question content: %w", err)
 	}
 
 	if topicName.Valid {
@@ -174,7 +300,7 @@ func (r *PracticeRepository) GetQuestionContent(ctx context.Context, questionID 
 		topic = "General"
 	}
 
-	return content, topic, level, correctAnswer, nil
+	return content, topic, level, correctAnswer, hint, nil
 }
 
 func (r *PracticeRepository) CreateQuestion(ctx context.Context, q *domain.Question) error {
@@ -200,9 +326,9 @@ func (r *PracticeRepository) CreateQuestion(ctx context.Context, q *domain.Quest
 	// But let's check schema: migration 000006 makes title nullable.
 
 	_, err = r.db.ExecContext(ctx,
-		`INSERT INTO questions (id, topic_id, content, level, correct_answer, title) 
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		q.ID, topicID, q.Content, q.Level, q.CorrectAnswer, "Generated Question")
+		`INSERT INTO questions (id, topic_id, content, level, correct_answer, hint, title) 
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		q.ID, topicID, q.Content, q.Level, q.CorrectAnswer, q.Hint, "Generated Question")
 
 	if err != nil {
 		return fmt.Errorf("failed to insert question: %w", err)

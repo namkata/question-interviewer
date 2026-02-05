@@ -7,12 +7,16 @@ import (
 )
 
 type PracticeSession struct {
-	ID        uuid.UUID  `json:"id"`
-	UserID    uuid.UUID  `json:"user_id"`
-	Score     int        `json:"score"`
-	StartedAt time.Time  `json:"started_at"`
-	EndedAt   *time.Time `json:"ended_at"` // Pointer to allow null
-	Status    string     `json:"status"`   // e.g., "in_progress", "completed"
+	ID        uuid.UUID              `json:"id"`
+	UserID    uuid.UUID              `json:"user_id"`
+	Score     int                    `json:"score"`
+	StartedAt time.Time              `json:"started_at"`
+	EndedAt   *time.Time             `json:"ended_at"` // Pointer to allow null
+	Status    string                 `json:"status"`   // e.g., "in_progress", "completed"
+	TopicID   *uuid.UUID             `json:"topic_id"`
+	Level     *string                `json:"level"`
+	Language  string                 `json:"language"`
+	Config    map[string]interface{} `json:"config"`
 }
 
 type PracticeAttempt struct {
@@ -26,12 +30,13 @@ type PracticeAttempt struct {
 }
 
 type Question struct {
-	ID            uuid.UUID `json:"id"`
-	Content       string    `json:"content"`
+	ID            uuid.UUID  `json:"id"`
+	Content       string     `json:"content"`
 	TopicID       *uuid.UUID `json:"topic_id"` // Simplified for now
-	Level         string    `json:"level"`
-	CorrectAnswer string    `json:"correct_answer"`
-	CreatedAt     time.Time `json:"created_at"`
+	Level         string     `json:"level"`
+	CorrectAnswer string     `json:"correct_answer"`
+	Hint          string     `json:"hint"`
+	CreatedAt     time.Time  `json:"created_at"`
 	// We might need to handle Topic string vs ID, but for now let's assume simple string mapping or null
 	TopicName string `json:"topic"` // Helper for now
 }
@@ -53,6 +58,7 @@ func NewPracticeSession(userID uuid.UUID) *PracticeSession {
 		Score:     0,
 		StartedAt: time.Now(),
 		Status:    "in_progress",
+		Config:    make(map[string]interface{}),
 	}
 }
 

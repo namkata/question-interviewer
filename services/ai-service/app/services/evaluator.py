@@ -42,6 +42,11 @@ class AnswerEvaluator:
             
             Provide a fair score (0-100), detailed feedback explaining what was good and what was missing, 
             concrete suggestions for improvement, and an example of a better/ideal answer.
+            
+            SCORING GUIDELINES:
+            - If the answer matches the Key Points/Correct Answer substantially, give a high score (90-100).
+            - If the answer is perfect or near-perfect, give 100.
+            - Do NOT artificially cap the score at 80. Reward good answers.
 
             IMPORTANT: The response (feedback, suggestions, improved_answer) MUST be in {language} language.
             

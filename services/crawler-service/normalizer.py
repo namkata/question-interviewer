@@ -31,10 +31,16 @@ class Normalizer:
             return "Golang"
         if has_word("python", text) or "list comprehension" in text:
             return "Python"
+        if has_word("java", text) or "jvm" in text:
+            return "Java"
+        if has_word("javascript", text) or has_word("typescript", text) or "react" in text or "vue" in text:
+            return "JavaScript/TypeScript"
         if "system design" in text or "scalability" in text:
             return "System Design"
         if "database" in text or "sql" in text:
             return "Database"
+        if "kubernetes" in text or "docker" in text or "ci/cd" in text:
+            return "DevOps"
         
         return "General"
 
@@ -43,9 +49,26 @@ class Normalizer:
         # Very naive heuristic
         text = (title + " " + content).lower()
         
-        if any(w in text for w in ["basic", "what is", "define"]):
+        if any(w in text for w in ["fresher", "intern", "new grad", "mới tốt nghiệp", "thực tập"]):
+            return "Fresher"
+        if any(w in text for w in ["basic", "what is", "define", "cơ bản", "là gì"]):
             return "Junior"
-        if any(w in text for w in ["design", "architecture", "trade-off", "optimize"]):
+        if any(w in text for w in ["design", "architecture", "trade-off", "optimize", "tối ưu", "thiết kế"]):
             return "Senior"
             
         return "Mid"
+
+    @staticmethod
+    def detect_role(title: str, content: str) -> str:
+        text = (title + " " + content).lower()
+        
+        if any(w in text for w in ["frontend", "front-end", "react", "vue", "angular", "css", "html", "browser"]):
+            return "FrontEnd"
+        if any(w in text for w in ["backend", "back-end", "api", "database", "server", "golang", "java", "python"]):
+            return "BackEnd"
+        if any(w in text for w in ["devops", "sre", "cloud", "aws", "docker", "kubernetes", "ci/cd"]):
+            return "DevOps"
+        if any(w in text for w in ["data engineer", "etl", "spark", "hadoop", "warehouse", "big data"]):
+            return "Data Engineer"
+            
+        return "BackEnd" # Default
