@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -62,10 +63,20 @@ func main() {
 		aiServiceURL = "http://localhost:8000" // Default to local AI service
 	}
 
+	aiEnabled := true
+	if v := strings.TrimSpace(os.Getenv("AI_ENABLED")); v != "" {
+		switch strings.ToLower(v) {
+		case "0", "false", "no", "off":
+			aiEnabled = false
+		default:
+			aiEnabled = true
+		}
+	}
+
 	// Dependency Injection
 	repo := postgres.NewPracticeRepository(db)
 	aiClient := ai.NewAIClient(aiServiceURL)
-	svc := services.NewPracticeService(repo, aiClient)
+	svc := services.NewPracticeService(repo, aiClient, aiEnabled)
 	handler := http_adapter.NewPracticeHandler(svc)
 
 	// Router Setup

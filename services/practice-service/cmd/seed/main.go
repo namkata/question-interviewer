@@ -20,6 +20,7 @@ type QuestionSeed struct {
 	Content       string
 	Level         string
 	CorrectAnswer string
+	SampleAnswer  string
 	Language      string
 	Role          string
 	Hint          string
@@ -151,15 +152,21 @@ func SeedQuestions(db *sql.DB, seedUserID string, topicIDByName map[string]strin
 			log.Fatalf("Topic not found for question title=%s topic=%s", q.Title, q.Topic)
 		}
 
+		sampleAnswer := strings.TrimSpace(q.SampleAnswer)
+		if sampleAnswer == "" {
+			sampleAnswer = q.CorrectAnswer
+		}
+
 		_, err := db.Exec(
-			`INSERT INTO questions (id, title, content, level, topic_id, created_by, status, correct_answer, language, role, hint)
-			 VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 'published', $6, $7, $8, $9)`,
+			`INSERT INTO questions (id, title, content, level, topic_id, created_by, status, correct_answer, sample_answer, sample_source, language, role, hint)
+			 VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 'published', $6, $7, 'seed', $8, $9, $10)`,
 			q.Title,
 			q.Content,
 			q.Level,
 			topicID,
 			seedUserID,
 			q.CorrectAnswer,
+			sampleAnswer,
 			q.Language,
 			q.Role,
 			q.Hint,
@@ -227,6 +234,7 @@ func ExpandTemplatesToQuestions(templates []QuestionTemplate) []QuestionSeed {
 			Content:       t.Content.En,
 			Level:         t.Level,
 			CorrectAnswer: t.CorrectAnswer.En,
+			SampleAnswer:  t.CorrectAnswer.En,
 			Language:      "en",
 			Role:          t.Role,
 			Hint:          t.Hint.En,
@@ -237,6 +245,7 @@ func ExpandTemplatesToQuestions(templates []QuestionTemplate) []QuestionSeed {
 			Content:       t.Content.Vi,
 			Level:         t.Level,
 			CorrectAnswer: t.CorrectAnswer.Vi,
+			SampleAnswer:  t.CorrectAnswer.Vi,
 			Language:      "vi",
 			Role:          t.Role,
 			Hint:          t.Hint.Vi,

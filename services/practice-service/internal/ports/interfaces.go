@@ -15,6 +15,10 @@ type PracticeRepository interface {
 	// Attempts
 	CreateAttempt(ctx context.Context, attempt *domain.PracticeAttempt) error
 
+	// Question sample answer cache
+	GetQuestionSampleCache(ctx context.Context, questionID uuid.UUID) (string, string, []string, string, error) // sampleAnswer, sampleFeedback, sampleSuggestions, sampleSource
+	UpsertQuestionSampleCache(ctx context.Context, questionID uuid.UUID, sampleAnswer, sampleFeedback string, sampleSuggestions []string, sampleSource string) error
+
 	// Helper method to get a random question ID for the session
 	GetRandomQuestionID(ctx context.Context, topicID *uuid.UUID, level *string, language string, config map[string]interface{}) (uuid.UUID, error)
 

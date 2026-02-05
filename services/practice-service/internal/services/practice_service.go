@@ -11,14 +11,16 @@ import (
 )
 
 type practiceService struct {
-	repo ports.PracticeRepository
-	ai   ports.AIService
+	repo      ports.PracticeRepository
+	ai        ports.AIService
+	aiEnabled bool
 }
 
-func NewPracticeService(repo ports.PracticeRepository, ai ports.AIService) ports.PracticeService {
+func NewPracticeService(repo ports.PracticeRepository, ai ports.AIService, aiEnabled bool) ports.PracticeService {
 	return &practiceService{
-		repo: repo,
-		ai:   ai,
+		repo:      repo,
+		ai:        ai,
+		aiEnabled: aiEnabled,
 	}
 }
 
@@ -128,7 +130,7 @@ func (s *practiceService) SubmitAnswer(ctx context.Context, sessionID, questionI
 	var suggestions []string
 	var improvedAnswer string
 
-	if aiEnabled {
+	if aiEnabled && s.aiEnabled {
 		// 3. Call AI Service
 		// Use session language if available, otherwise fallback to request language or default
 		evalLanguage := language
@@ -234,7 +236,21 @@ func (s *practiceService) SuggestAnswer(ctx context.Context, questionID uuid.UUI
 	}
 
 	userAnswer := strings.TrimSpace(answerContent)
-	if userAnswer == "" {
+	requestingSample := userAnswer == ""
+
+	if requestingSample {
+		sampleAnswer, sampleFeedback, sampleSuggestions, sampleSource, err := s.repo.GetQuestionSampleCache(ctx, questionID)
+		if err == nil && strings.TrimSpace(sampleAnswer) != "" && strings.TrimSpace(sampleSource) == "ai" {
+			return 0, sampleFeedback, sampleSuggestions, sampleAnswer, nil
+		}
+
+		if !s.aiEnabled {
+			if err == nil && strings.TrimSpace(sampleAnswer) != "" {
+				return 0, sampleFeedback, sampleSuggestions, sampleAnswer, nil
+			}
+			return 0, "", nil, qCorrectAnswer, nil
+		}
+
 		if evalLanguage == "vi" {
 			userAnswer = "N/A (Ứng viên chưa trả lời. Hãy đưa ra câu trả lời mẫu hoàn chỉnh.)"
 		} else {
@@ -242,13 +258,21 @@ func (s *practiceService) SuggestAnswer(ctx context.Context, questionID uuid.UUI
 		}
 	}
 
+	if !s.aiEnabled {
+		return 0, "", nil, qCorrectAnswer, nil
+	}
+
 	score, feedback, suggestions, improvedAnswer, err := s.ai.EvaluateAnswer(ctx, qContent, userAnswer, qCorrectAnswer, qTopic, qLevel, evalLanguage)
 	if err != nil {
-		return 0, "**AI unavailable**\n\n**Standard Answer:**\n" + qCorrectAnswer, nil, qCorrectAnswer, nil
+		return 0, "", nil, qCorrectAnswer, nil
 	}
 
 	if strings.TrimSpace(improvedAnswer) == "" {
 		improvedAnswer = qCorrectAnswer
+	}
+
+	if requestingSample {
+		_ = s.repo.UpsertQuestionSampleCache(ctx, questionID, improvedAnswer, feedback, suggestions, "ai")
 	}
 
 	return score, feedback, suggestions, improvedAnswer, nil

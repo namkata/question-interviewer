@@ -30,6 +30,12 @@ func (r *fakeRepo) UpdateSession(ctx context.Context, session *domain.PracticeSe
 func (r *fakeRepo) CreateAttempt(ctx context.Context, attempt *domain.PracticeAttempt) error {
 	return nil
 }
+func (r *fakeRepo) GetQuestionSampleCache(ctx context.Context, questionID uuid.UUID) (string, string, []string, string, error) {
+	return "", "", nil, "", nil
+}
+func (r *fakeRepo) UpsertQuestionSampleCache(ctx context.Context, questionID uuid.UUID, sampleAnswer, sampleFeedback string, sampleSuggestions []string, sampleSource string) error {
+	return nil
+}
 func (r *fakeRepo) GetRandomQuestionID(ctx context.Context, topicID *uuid.UUID, level *string, language string, config map[string]interface{}) (uuid.UUID, error) {
 	return uuid.Nil, errors.New("not implemented")
 }
@@ -70,17 +76,14 @@ func TestSuggestAnswer_FallbackWhenAIUnavailable(t *testing.T) {
 		hint:            "Focus on purpose.",
 	}
 	ai := &fakeAI{err: errors.New("ai down")}
-	svc := NewPracticeService(repo, ai)
+	svc := NewPracticeService(repo, ai, true)
 
-	score, feedback, suggestions, improved, err := svc.SuggestAnswer(context.Background(), uuid.New(), "my draft", "vi")
+	score, feedback, suggestions, improved, err := svc.SuggestAnswer(context.Background(), uuid.New(), "", "vi")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if score != 0 {
 		t.Fatalf("expected score=0, got %d", score)
-	}
-	if feedback == "" {
-		t.Fatalf("expected non-empty feedback")
 	}
 	if improved != repo.correctAnswer {
 		t.Fatalf("expected improved answer fallback to correct answer")
@@ -88,5 +91,7 @@ func TestSuggestAnswer_FallbackWhenAIUnavailable(t *testing.T) {
 	if suggestions != nil {
 		t.Fatalf("expected nil suggestions on fallback")
 	}
+	if feedback != "" {
+		t.Fatalf("expected empty feedback on fallback")
+	}
 }
-

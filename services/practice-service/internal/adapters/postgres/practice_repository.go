@@ -258,6 +258,54 @@ func (r *PracticeRepository) CreateAttempt(ctx context.Context, attempt *domain.
 	return nil
 }
 
+func (r *PracticeRepository) GetQuestionSampleCache(ctx context.Context, questionID uuid.UUID) (string, string, []string, string, error) {
+	query := `
+		SELECT COALESCE(sample_answer, ''), COALESCE(sample_feedback, ''), sample_suggestions, COALESCE(sample_source, '')
+		FROM questions
+		WHERE id = $1
+	`
+
+	var sampleAnswer, sampleFeedback, sampleSource string
+	var suggestionsRaw []byte
+
+	row := r.db.QueryRowContext(ctx, query, questionID)
+	if err := row.Scan(&sampleAnswer, &sampleFeedback, &suggestionsRaw, &sampleSource); err != nil {
+		return "", "", nil, "", fmt.Errorf("failed to get question sample cache: %w", err)
+	}
+
+	var sampleSuggestions []string
+	if len(suggestionsRaw) > 0 {
+		_ = json.Unmarshal(suggestionsRaw, &sampleSuggestions)
+	}
+
+	return sampleAnswer, sampleFeedback, sampleSuggestions, sampleSource, nil
+}
+
+func (r *PracticeRepository) UpsertQuestionSampleCache(ctx context.Context, questionID uuid.UUID, sampleAnswer, sampleFeedback string, sampleSuggestions []string, sampleSource string) error {
+	var suggestionsJSON []byte
+	var err error
+	if sampleSuggestions != nil {
+		suggestionsJSON, err = json.Marshal(sampleSuggestions)
+		if err != nil {
+			return fmt.Errorf("failed to marshal sample suggestions: %w", err)
+		}
+	}
+
+	_, err = r.db.ExecContext(ctx, `
+		UPDATE questions
+		SET sample_answer = $2,
+			sample_feedback = $3,
+			sample_suggestions = $4,
+			sample_source = $5,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`, questionID, sampleAnswer, sampleFeedback, suggestionsJSON, sampleSource)
+	if err != nil {
+		return fmt.Errorf("failed to upsert question sample cache: %w", err)
+	}
+	return nil
+}
+
 func (r *PracticeRepository) GetQuestionContent(ctx context.Context, questionID uuid.UUID) (string, string, string, string, string, error) {
 	// Join with topics table to get topic name if needed, but for now assuming we just need question fields
 	// But wait, topic name is in topics table.
@@ -311,9 +359,9 @@ func (r *PracticeRepository) CreateQuestion(ctx context.Context, q *domain.Quest
 	// But let's check schema: migration 000006 makes title nullable.
 
 	_, err = r.db.ExecContext(ctx,
-		`INSERT INTO questions (id, topic_id, content, level, correct_answer, hint, title) 
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		q.ID, topicID, q.Content, q.Level, q.CorrectAnswer, q.Hint, "Generated Question")
+		`INSERT INTO questions (id, topic_id, content, level, correct_answer, sample_answer, sample_source, hint, title) 
+		 VALUES ($1, $2, $3, $4, $5, $6, 'user', $7, $8)`,
+		q.ID, topicID, q.Content, q.Level, q.CorrectAnswer, q.CorrectAnswer, q.Hint, "Generated Question")
 
 	if err != nil {
 		return fmt.Errorf("failed to insert question: %w", err)
