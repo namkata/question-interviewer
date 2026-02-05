@@ -34,6 +34,11 @@ type SubmitAnswerRequest struct {
 	AIEnabled  *bool  `json:"ai_enabled"`
 }
 
+type SuggestAnswerRequest struct {
+	Content  string `json:"content"`
+	Language string `json:"language"`
+}
+
 func (h *PracticeHandler) StartSession(c *gin.Context) {
 	var req StartSessionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -151,6 +156,34 @@ func (h *PracticeHandler) GetQuestion(c *gin.Context) {
 	})
 }
 
+func (h *PracticeHandler) SuggestAnswer(c *gin.Context) {
+	questionIDStr := c.Param("id")
+	questionID, err := uuid.Parse(questionIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid question ID format"})
+		return
+	}
+
+	var req SuggestAnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	score, feedback, suggestions, improvedAnswer, err := h.service.SuggestAnswer(c.Request.Context(), questionID, req.Content, req.Language)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"score":           score,
+		"feedback":        feedback,
+		"suggestions":     suggestions,
+		"improved_answer": improvedAnswer,
+	})
+}
+
 func (h *PracticeHandler) SkipRound(c *gin.Context) {
 	sessionIDStr := c.Param("id")
 	sessionID, err := uuid.Parse(sessionIDStr)
@@ -208,6 +241,7 @@ func (h *PracticeHandler) RegisterRoutes(r *gin.Engine) {
 		api.POST("/sessions/:id/skip", h.SkipRound)
 		api.GET("/sessions/:id/questions/random", h.GetRandomQuestionForSession)
 		api.GET("/questions/:id", h.GetQuestion)
+		api.POST("/questions/:id/suggest", h.SuggestAnswer)
 		api.POST("/questions", h.CreateQuestion)
 	}
 }

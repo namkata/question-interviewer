@@ -111,7 +111,10 @@ const TRANSLATIONS = {
     fail: 'NEEDS IMPROVEMENT',
     recording_error: 'Microphone access denied or not supported',
     hint_title: 'Hint',
-    restart: 'Start New Session'
+    restart: 'Start New Session',
+    ai_suggest: 'Sample Answer',
+    ai_suggest_title: 'Sample Answer',
+    ai_suggest_error: 'Failed to get AI suggestions'
   },
   vi: {
     title: 'Phỏng vấn thử AI',
@@ -141,7 +144,10 @@ const TRANSLATIONS = {
     fail: 'CẦN CẢI THIỆN',
     recording_error: 'Không thể truy cập microphone',
     hint_title: 'Gợi ý',
-    restart: 'Bắt đầu phiên mới'
+    restart: 'Bắt đầu phiên mới',
+    ai_suggest: 'Câu trả lời mẫu',
+    ai_suggest_title: 'Câu trả lời mẫu',
+    ai_suggest_error: 'Không thể lấy gợi ý từ AI'
   }
 };
 
@@ -192,6 +198,9 @@ export default function PracticeSession() {
   const [nextQuestionId, setNextQuestionId] = useState<string | null>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(1);
   const [totalQuestions, setTotalQuestions] = useState(2);
+  const [aiSuggestion, setAiSuggestion] = useState<any>(null);
+  const [aiSuggestLoading, setAiSuggestLoading] = useState(false);
+  const [aiSuggestError, setAiSuggestError] = useState('');
   
   // Voice State
   const [isListening, setIsListening] = useState(false);
@@ -288,6 +297,8 @@ export default function PracticeSession() {
       speak(res.data.content);
       setAnswer('');
       setAttempt(null);
+      setAiSuggestion(null);
+      setAiSuggestError('');
     } catch (err) {
       console.error(err);
       setError('Could not load question');
@@ -394,6 +405,8 @@ export default function PracticeSession() {
       const result = res.data.attempt || res.data; // Handle wrapped response if any
       setAttempt(result);
       setNextQuestionId(res.data.next_question_id);
+      setAiSuggestion(null);
+      setAiSuggestError('');
       
       // Update stats
       setRoundStats(prev => {
@@ -424,6 +437,24 @@ export default function PracticeSession() {
       setError(t.error_answer);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const suggestAnswer = async () => {
+    if (!question) return;
+    setAiSuggestLoading(true);
+    setAiSuggestError('');
+    try {
+      const res = await axios.post(getApiUrl(`/questions/${question.id}/suggest`), {
+        content: answer,
+        language: language
+      });
+      setAiSuggestion(res.data);
+    } catch (err: any) {
+      console.error(err);
+      setAiSuggestError(err.response?.data?.error || t.ai_suggest_error);
+    } finally {
+      setAiSuggestLoading(false);
     }
   };
 
@@ -828,6 +859,48 @@ export default function PracticeSession() {
             
             {!attempt ? (
               <>
+                {(aiSuggestError || aiSuggestion) && (
+                  <div className="mb-4">
+                    {aiSuggestError && (
+                      <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-sm text-red-700 flex gap-2 items-start">
+                        <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                        <div>{aiSuggestError}</div>
+                      </div>
+                    )}
+                    {aiSuggestion && (
+                      <div className="mt-3 p-4 bg-indigo-50 border border-indigo-100 rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="text-sm font-semibold text-indigo-900 flex items-center gap-2">
+                            <Lightbulb className="w-4 h-4" />
+                            {t.ai_suggest_title}
+                          </div>
+                        </div>
+                        {aiSuggestion.improved_answer && (
+                          <div className="text-sm text-indigo-900">
+                            <div className="whitespace-pre-wrap bg-white/60 border border-indigo-100 rounded p-3">
+                              {aiSuggestion.improved_answer}
+                            </div>
+                          </div>
+                        )}
+                        {aiSuggestion.feedback && (
+                          <div className="mt-3 text-xs text-indigo-900/80 whitespace-pre-wrap">
+                            {aiSuggestion.feedback}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="mb-3 flex justify-end">
+                  <button
+                    onClick={suggestAnswer}
+                    disabled={loading || aiSuggestLoading}
+                    className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 font-medium"
+                  >
+                    {aiSuggestLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Lightbulb className="w-4 h-4" />}
+                    {aiSuggestLoading ? t.processing : t.ai_suggest}
+                  </button>
+                </div>
                 <textarea
                   value={answer}
                   onChange={(e) => setAnswer(e.target.value)}
@@ -868,15 +941,38 @@ export default function PracticeSession() {
                         </span>
                     </div>
                   </div>
-                  <p className="text-blue-800 leading-relaxed mb-4">{attempt.feedback}</p>
-                  
-                  {attempt.suggested_answer && (
-                    <div className="pt-4 border-t border-blue-200">
-                        <h5 className="text-sm font-bold text-blue-900 mb-1">{t.suggested_answer}:</h5>
-                        <p className="text-sm text-blue-800 opacity-90">{attempt.suggested_answer}</p>
-                    </div>
-                  )}
+                  <p className="text-blue-800 leading-relaxed whitespace-pre-wrap">{attempt.feedback}</p>
                 </div>
+
+                {Array.isArray(attempt.suggestions) && attempt.suggestions.length > 0 && (
+                  <div className="bg-indigo-50 rounded-lg p-6 border border-indigo-100">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-bold text-indigo-900 flex items-center gap-2">
+                        <Lightbulb className="w-5 h-5" />
+                        {t.ai_suggest_title}
+                      </h4>
+                    </div>
+                    <ul className="list-disc pl-5 space-y-1 text-indigo-900 text-sm">
+                      {attempt.suggestions.map((s: string, idx: number) => (
+                        <li key={idx}>{s}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {attempt.improved_answer && (
+                  <div className="bg-emerald-50 rounded-lg p-6 border border-emerald-100">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-bold text-emerald-900 flex items-center gap-2">
+                        <BookOpen className="w-5 h-5" />
+                        {t.suggested_answer}
+                      </h4>
+                    </div>
+                    <div className="text-emerald-900 text-sm whitespace-pre-wrap bg-white/60 border border-emerald-100 rounded p-4">
+                      {attempt.improved_answer}
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex justify-end">
                   <button

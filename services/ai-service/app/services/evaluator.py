@@ -42,6 +42,11 @@ class AnswerEvaluator:
             
             Provide a fair score (0-100), detailed feedback explaining what was good and what was missing, 
             concrete suggestions for improvement, and an example of a better/ideal answer.
+
+            If the Candidate's Answer is empty or "N/A", treat this as a request for a sample answer:
+            - Give a score of 0.
+            - In feedback, explain the key points that a strong answer should cover.
+            - In improved_answer, provide a complete, high-quality sample answer the candidate can learn from.
             
             SCORING GUIDELINES:
             - If the answer matches the Key Points/Correct Answer substantially, give a high score (90-100).

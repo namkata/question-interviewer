@@ -20,13 +20,15 @@ type PracticeSession struct {
 }
 
 type PracticeAttempt struct {
-	ID         uuid.UUID `json:"id"`
-	SessionID  uuid.UUID `json:"session_id"`
-	QuestionID uuid.UUID `json:"question_id"`
-	UserAnswer string    `json:"user_answer"`
-	Score      int       `json:"score"`    // 0-100 from AI
-	Feedback   string    `json:"feedback"` // Markdown from AI
-	CreatedAt  time.Time `json:"created_at"`
+	ID             uuid.UUID `json:"id"`
+	SessionID      uuid.UUID `json:"session_id"`
+	QuestionID     uuid.UUID `json:"question_id"`
+	UserAnswer     string    `json:"user_answer"`
+	Score          int       `json:"score"`                     // 0-100 from AI
+	Feedback       string    `json:"feedback"`                  // Short feedback text (no suggestions)
+	Suggestions    []string  `json:"suggestions,omitempty"`     // Returned in API; not persisted
+	ImprovedAnswer string    `json:"improved_answer,omitempty"` // Returned in API; not persisted
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type Question struct {

@@ -124,40 +124,39 @@ func (s *practiceService) SubmitAnswer(ctx context.Context, sessionID, questionI
 	}
 
 	var score int
-	var fullFeedback string
+	var feedbackText string
+	var suggestions []string
+	var improvedAnswer string
 
 	if aiEnabled {
 		// 3. Call AI Service
-		var feedback, improvedAnswer string
-		var suggestions []string
 		// Use session language if available, otherwise fallback to request language or default
 		evalLanguage := language
 		if session.Language != "" {
 			evalLanguage = session.Language
 		}
 
-		score, feedback, suggestions, improvedAnswer, err = s.ai.EvaluateAnswer(ctx, qContent, answerContent, qCorrectAnswer, qTopic, qLevel, evalLanguage)
+		score, feedbackText, suggestions, improvedAnswer, err = s.ai.EvaluateAnswer(ctx, qContent, answerContent, qCorrectAnswer, qTopic, qLevel, evalLanguage)
 		if err != nil {
-			// Fallback or error? For now, log and error, or return attempt with error status.
-			// Let's return error for now to keep it simple.
-			return nil, uuid.Nil, fmt.Errorf("AI evaluation failed: %w", err)
+			score = 0
+			feedbackText = "AI unavailable."
+			improvedAnswer = qCorrectAnswer
+			suggestions = nil
 		}
-
-		// Format feedback with suggestions and improved answer
-		fullFeedback = fmt.Sprintf("%s\n\n**Suggestions:**\n%s\n\n**Improved Answer:**\n%s",
-			feedback,
-			strings.Join(suggestions, "\n- "),
-			improvedAnswer)
 	} else {
 		// No AI: Use database answer
 		score = 0 // Not graded
-		fullFeedback = fmt.Sprintf("**Standard Answer (No AI):**\n%s", qCorrectAnswer)
+		feedbackText = "Standard answer provided (AI disabled)."
+		improvedAnswer = qCorrectAnswer
+		suggestions = nil
 	}
 
 	// 4. Create Attempt
 	attempt := domain.NewPracticeAttempt(sessionID, questionID, answerContent)
 	attempt.Score = score
-	attempt.Feedback = fullFeedback
+	attempt.Feedback = feedbackText
+	attempt.Suggestions = suggestions
+	attempt.ImprovedAnswer = improvedAnswer
 
 	if err := s.repo.CreateAttempt(ctx, attempt); err != nil {
 		return nil, uuid.Nil, fmt.Errorf("failed to save attempt: %w", err)
@@ -221,6 +220,38 @@ func (s *practiceService) SubmitAnswer(ctx context.Context, sessionID, questionI
 	}
 
 	return attempt, nextQuestionID, nil
+}
+
+func (s *practiceService) SuggestAnswer(ctx context.Context, questionID uuid.UUID, answerContent, language string) (int, string, []string, string, error) {
+	qContent, qTopic, qLevel, qCorrectAnswer, _, err := s.repo.GetQuestionContent(ctx, questionID)
+	if err != nil {
+		return 0, "", nil, "", fmt.Errorf("failed to get question content: %w", err)
+	}
+
+	evalLanguage := language
+	if evalLanguage == "" {
+		evalLanguage = "vi"
+	}
+
+	userAnswer := strings.TrimSpace(answerContent)
+	if userAnswer == "" {
+		if evalLanguage == "vi" {
+			userAnswer = "N/A (Ứng viên chưa trả lời. Hãy đưa ra câu trả lời mẫu hoàn chỉnh.)"
+		} else {
+			userAnswer = "N/A (No candidate answer. Provide a complete sample answer.)"
+		}
+	}
+
+	score, feedback, suggestions, improvedAnswer, err := s.ai.EvaluateAnswer(ctx, qContent, userAnswer, qCorrectAnswer, qTopic, qLevel, evalLanguage)
+	if err != nil {
+		return 0, "**AI unavailable**\n\n**Standard Answer:**\n" + qCorrectAnswer, nil, qCorrectAnswer, nil
+	}
+
+	if strings.TrimSpace(improvedAnswer) == "" {
+		improvedAnswer = qCorrectAnswer
+	}
+
+	return score, feedback, suggestions, improvedAnswer, nil
 }
 
 func (s *practiceService) SkipCurrentRound(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error) {

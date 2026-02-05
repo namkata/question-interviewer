@@ -32,6 +32,7 @@ type AIService interface {
 type PracticeService interface {
 	StartSession(ctx context.Context, userID uuid.UUID, topicID *uuid.UUID, level *string, language string, config map[string]interface{}) (*domain.PracticeSession, uuid.UUID, error)
 	SubmitAnswer(ctx context.Context, sessionID, questionID uuid.UUID, answerContent, language string, aiEnabled bool) (*domain.PracticeAttempt, uuid.UUID, error)
+	SuggestAnswer(ctx context.Context, questionID uuid.UUID, answerContent, language string) (int, string, []string, string, error)
 	SkipCurrentRound(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error)
 	GetSession(ctx context.Context, id uuid.UUID) (*domain.PracticeSession, error)
 	GetQuestion(ctx context.Context, questionID uuid.UUID) (string, string, string, string, string, error) // returns content, topic, level, correctAnswer, hint

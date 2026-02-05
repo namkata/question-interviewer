@@ -151,7 +151,7 @@ func (r *PracticeRepository) GetRandomQuestionID(ctx context.Context, topicID *u
 				case "Node.js":
 					stackNames[i] = "NodeJS"
 				case "PostgreSQL", "MongoDB", "Redis":
-					stackNames[i] = "Database"
+					stackNames[i] = "Data Layer"
 				case "TypeScript":
 					stackNames[i] = "JavaScript"
 				default:
@@ -171,30 +171,15 @@ func (r *PracticeRepository) GetRandomQuestionID(ctx context.Context, topicID *u
 	}
 
 	// 3. Role from Config
-	// NOTE: Only apply role filter if we are NOT in a specific topic round (like DevOps, Behavioral)
-	// OR if the topic implies a specific role.
-	// However, usually DevOps/Behavioral questions should be accessible to all roles.
-	// But in the DB they might be tagged with 'DevOps' role.
-	// If the user is 'BackEnd', filtering by 'BackEnd' or 'Any' will exclude 'DevOps' questions.
-	// Fix: If topicID is present (meaning we are targeting a specific topic), we should be more lenient with Role,
-	// or perhaps ignore Role filter if the Topic itself defines the context.
-	// Let's modify: If TopicID is set, we assume the Topic is the primary filter.
-	// But wait, if Topic is 'Golang', we might still want 'BackEnd' role if there are 'Golang' questions for 'DevOps'?
-	// Actually, for simplicity and to fix the reported issue:
-	// If the round is 'devops_round' (we can check config['round_id']), we should allow 'DevOps' role.
-
 	if config != nil {
 		if role, ok := config["role"].(string); ok && role != "" {
-			// Check if we are in a special round
 			roundID, _ := config["round_id"].(string)
 
 			if roundID == "devops_round" {
-				// Allow candidate role OR 'Any' OR 'DevOps'
 				whereClauses = append(whereClauses, fmt.Sprintf("(q.role = $%d OR q.role = 'Any' OR q.role = 'DevOps')", argIdx))
 				args = append(args, role)
 				argIdx++
 			} else {
-				// Standard behavior
 				whereClauses = append(whereClauses, fmt.Sprintf("(q.role = $%d OR q.role = 'Any')", argIdx))
 				args = append(args, role)
 				argIdx++
