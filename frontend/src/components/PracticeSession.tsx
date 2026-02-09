@@ -227,6 +227,7 @@ export default function PracticeSession() {
   // Stats
   const [roundStats, setRoundStats] = useState<Record<string, { sum: number; count: number }>>({});
   const [finalSummary, setFinalSummary] = useState<any>(null);
+  const [backendSummary, setBackendSummary] = useState<any>(null);
   const [attemptsHistory, setAttemptsHistory] = useState<any[]>([]);
 
   const t = TRANSLATIONS[language];
@@ -307,69 +308,56 @@ export default function PracticeSession() {
     }
   };
 
-  const startSession = async (roundIdOverride?: string) => {
+  const startSession = async () => {
     setLoading(true);
     setError('');
     setNextQuestionId(null);
     setCurrentQuestionIndex(1);
     
-    // Determine the round to use: override -> state -> default to first round
-    let activeRoundId = roundIdOverride || round;
-    if (!activeRoundId && step === 'setup') {
-        activeRoundId = ROUNDS[0].id;
-        setRound(activeRoundId);
-    }
+    const activeRoundId = ROUNDS[0].id;
+    setRound(activeRoundId);
+    setCurrentRoundIndex(0);
+    setTotalQuestions(ROUNDS[0].count);
 
-    // If starting a fresh session (setup step), reset summary and history
-    if (step === 'setup') {
-        setFinalSummary(null);
-        setAttemptsHistory([]);
-        setRoundStats({});
-    }
+    setFinalSummary(null);
+    setBackendSummary(null);
+    setAttemptsHistory([]);
+    setRoundStats({});
 
-    const idx = ROUNDS.findIndex(r => r.id === activeRoundId);
-    setCurrentRoundIndex(idx >= 0 ? idx : 0);
-    
-    // Logic to map round to topic/level
-    const getTopicAndLevelForRound = (rId: string) => {
-        let topicName: string | undefined = undefined;
-        let levelName = selectedLevel;
-        let questionCount = 2;
-
-        const selectedRound = ROUNDS.find(r => r.id === rId);
-        if (selectedRound) {
-            questionCount = selectedRound.count;
-        }
-
-        switch (rId) {
-            case 'cv_screening': topicName = 'CV Screening'; break;
-            case 'core_tech': topicName = undefined; break; // Will use role/stack
-            case 'database': topicName = 'Database'; break;
-            case 'system_design': topicName = 'System Design'; break;
-            case 'coding': topicName = 'Algorithms'; break;
-            case 'testing': topicName = 'Testing'; break;
-            case 'devops_round': topicName = 'DevOps'; break;
-            case 'behavioral': topicName = 'Behavioral'; break;
-            default: topicName = undefined;
-        }
-        return { topicName, levelName, questionCount };
+    const getTopicForRound = (rId: string) => {
+      switch (rId) {
+        case 'cv_screening': return 'CV Screening';
+        case 'core_tech': return '';
+        case 'database': return 'Database';
+        case 'system_design': return 'System Design';
+        case 'coding': return 'Algorithms';
+        case 'testing': return 'Testing';
+        case 'devops_round': return 'DevOps';
+        case 'behavioral': return 'Behavioral';
+        default: return '';
+      }
     };
 
-    const { topicName, levelName, questionCount } = getTopicAndLevelForRound(activeRoundId);
-    setTotalQuestions(questionCount);
+    const roundsConfig = ROUNDS.map(r => ({
+      id: r.id,
+      name: r.title.en,
+      topic: getTopicForRound(r.id),
+      count: r.count
+    }));
 
     try {
       // Use a fixed user ID for demo purposes
       const userId = '123e4567-e89b-12d3-a456-426614174000';
       const response = await axios.post(getApiUrl('/sessions'), {
         user_id: userId,
-        topic_id: topicName, // Backend handles string topic lookup if needed or ID
-        level: levelName,
+        level: selectedLevel,
         language: language,
         config: {
+          mode: 'interview',
           role: selectedRole,
           stacks: selectedStacks,
-          round_id: activeRoundId
+          round_id: activeRoundId,
+          rounds: roundsConfig
         }
       });
 
@@ -481,11 +469,26 @@ export default function PracticeSession() {
       const nextRoundId = ROUNDS[nextIndex].id;
       setRound(nextRoundId);
       setCurrentRoundIndex(nextIndex);
+      setTotalQuestions(ROUNDS[nextIndex].count);
+      setCurrentQuestionIndex(1);
       setQuestion(null);
       setAnswer('');
       setAttempt(null);
-      // Auto start next round
-      startSession(nextRoundId);
+      if (nextQuestionId && session?.id) {
+        fetchQuestion(nextQuestionId);
+      } else if (session?.id) {
+        axios.get(getApiUrl(`/sessions/${session.id}/questions/random`))
+          .then(res => {
+            if (res.data?.question_id) {
+              fetchQuestion(res.data.question_id);
+            } else {
+              setError('No questions found for this criteria.');
+            }
+          })
+          .catch(err => {
+            setError(err.response?.data?.error || 'Failed to load question');
+          });
+      }
     } else {
       // All rounds complete
       const details = ROUNDS.map(r => {
@@ -497,7 +500,14 @@ export default function PracticeSession() {
       });
       const overallPass = details.every(d => d.pass);
       setFinalSummary({ overallPass, details });
-      setStep('summary');
+      if (session?.id) {
+        axios.get(getApiUrl(`/sessions/${session.id}/summary`), { params: { language } })
+          .then(res => setBackendSummary(res.data))
+          .catch(() => setBackendSummary(null))
+          .finally(() => setStep('summary'));
+      } else {
+        setStep('summary');
+      }
     }
   };
 
@@ -703,6 +713,45 @@ export default function PracticeSession() {
                 </div>
              ))}
           </div>
+
+          {backendSummary?.ai_summary && (
+            <div className="mb-8 bg-indigo-50 border border-indigo-100 rounded-lg p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xl font-bold text-indigo-900">
+                  {language === 'vi' ? 'AI Tổng kết' : 'AI Summary'}
+                </h3>
+                <div className="text-sm font-bold text-indigo-900">
+                  {backendSummary.ai_summary.overall_score}/10
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-white rounded-lg p-4 border border-indigo-100">
+                  <div className="font-semibold text-indigo-900 mb-2">
+                    {language === 'vi' ? 'Điểm mạnh' : 'Strengths'}
+                  </div>
+                  <div className="text-sm text-indigo-900 whitespace-pre-line">
+                    {backendSummary.ai_summary.strengths}
+                  </div>
+                </div>
+                <div className="bg-white rounded-lg p-4 border border-indigo-100">
+                  <div className="font-semibold text-indigo-900 mb-2">
+                    {language === 'vi' ? 'Điểm yếu' : 'Weaknesses'}
+                  </div>
+                  <div className="text-sm text-indigo-900 whitespace-pre-line">
+                    {backendSummary.ai_summary.weaknesses}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 bg-white rounded-lg p-4 border border-indigo-100">
+                <div className="font-semibold text-indigo-900 mb-2">
+                  {language === 'vi' ? 'Mức độ sẵn sàng' : 'Readiness'}
+                </div>
+                <div className="text-sm text-indigo-900 whitespace-pre-line">
+                  {backendSummary.ai_summary.readiness}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="mb-8">
               <h3 className="text-xl font-bold text-gray-900 mb-4">Detailed Feedback History</h3>

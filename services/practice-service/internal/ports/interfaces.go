@@ -14,6 +14,7 @@ type PracticeRepository interface {
 
 	// Attempts
 	CreateAttempt(ctx context.Context, attempt *domain.PracticeAttempt) error
+	ListAttemptsBySession(ctx context.Context, sessionID uuid.UUID) ([]*domain.PracticeAttempt, error)
 
 	// Question sample answer cache
 	GetQuestionSampleCache(ctx context.Context, questionID uuid.UUID) (string, string, []string, string, error) // sampleAnswer, sampleFeedback, sampleSuggestions, sampleSource
@@ -31,6 +32,7 @@ type PracticeRepository interface {
 
 type AIService interface {
 	EvaluateAnswer(ctx context.Context, question, userAnswer, correctAnswer, topic, level, language string) (int, string, []string, string, error) // score, feedback, suggestions, improvedAnswer
+	SummarizeInterview(ctx context.Context, role, language string, attempts []domain.PracticeAttempt) (string, string, string, int, error)         // strengths, weaknesses, readiness, overallScore
 }
 
 type PracticeService interface {
@@ -39,6 +41,8 @@ type PracticeService interface {
 	SuggestAnswer(ctx context.Context, questionID uuid.UUID, answerContent, language string) (int, string, []string, string, error)
 	SkipCurrentRound(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error)
 	GetSession(ctx context.Context, id uuid.UUID) (*domain.PracticeSession, error)
+	ListAttempts(ctx context.Context, sessionID uuid.UUID) ([]*domain.PracticeAttempt, error)
+	GetSessionSummary(ctx context.Context, sessionID uuid.UUID, language string) (map[string]interface{}, error)
 	GetQuestion(ctx context.Context, questionID uuid.UUID) (string, string, string, string, string, error) // returns content, topic, level, correctAnswer, hint
 	GetRandomQuestion(ctx context.Context, sessionID uuid.UUID, topicName *string) (uuid.UUID, error)
 	CreateQuestion(ctx context.Context, content, topic, level, correctAnswer, hint string) (*domain.Question, error)

@@ -19,15 +19,22 @@ from typing import List, Optional
 
 # Define the internal Pydantic model for LangChain parser (v1 compatible if needed, but let's try to match schema)
 class EvaluationOutput(BaseModel):
-    score: int = Field(description="Score from 0 to 100")
-    feedback: str = Field(description="Detailed feedback on the answer")
+    score: int = Field(description="Score from 1 to 10")
+    feedback: str = Field(description="Short feedback on the answer")
     suggestions: List[str] = Field(description="List of suggestions for improvement")
     improved_answer: str = Field(description="An example of a better answer")
+
+class InterviewSummaryOutput(BaseModel):
+    strengths: str = Field(description="Candidate's key strengths")
+    weaknesses: str = Field(description="Candidate's key weaknesses")
+    readiness: str = Field(description="Readiness assessment for a real interview")
+    overall_score: int = Field(description="Overall readiness score from 1 to 10")
 
 class AnswerEvaluator:
     def __init__(self):
         self.llm = self._get_llm()
         self.parser = JsonOutputParser(pydantic_object=EvaluationOutput)
+        self.summary_parser = JsonOutputParser(pydantic_object=InterviewSummaryOutput)
         self.prompt = PromptTemplate(
             template="""
             You are an expert technical interviewer. Evaluate the candidate's answer to the following interview question.
@@ -40,18 +47,22 @@ class AnswerEvaluator:
             
             Correct Answer / Key Points (Reference): {correct_answer}
             
-            Provide a fair score (0-100), detailed feedback explaining what was good and what was missing, 
-            concrete suggestions for improvement, and an example of a better/ideal answer.
+            Score the answer using these criteria:
+            - Correctness (accuracy vs key points)
+            - Clarity (structure, readability, conciseness)
+            - Depth (why/how, trade-offs, edge cases)
+            - Practical thinking (real-world considerations, examples, constraints)
+
+            Provide:
+            - score: an integer from 1 to 10 (10 is excellent).
+            - feedback: 1–3 short sentences, fair and actionable (not too easy, not too harsh).
+            - suggestions: up to 3 bullet-like items (short).
+            - improved_answer: a concise improved answer (only as long as needed).
 
             If the Candidate's Answer is empty or "N/A", treat this as a request for a sample answer:
-            - Give a score of 0.
-            - In feedback, explain the key points that a strong answer should cover.
-            - In improved_answer, provide a complete, high-quality sample answer the candidate can learn from.
-            
-            SCORING GUIDELINES:
-            - If the answer matches the Key Points/Correct Answer substantially, give a high score (90-100).
-            - If the answer is perfect or near-perfect, give 100.
-            - Do NOT artificially cap the score at 80. Reward good answers.
+            - Give a score of 1.
+            - In feedback, briefly list the key points a strong answer should cover.
+            - In improved_answer, provide a high-quality sample answer the candidate can learn from.
 
             IMPORTANT: The response (feedback, suggestions, improved_answer) MUST be in {language} language.
             
@@ -61,6 +72,28 @@ class AnswerEvaluator:
             partial_variables={"format_instructions": self.parser.get_format_instructions()},
         )
         self.chain = self.prompt | self.llm | self.parser
+
+        self.summary_prompt = PromptTemplate(
+            template="""
+            You are an expert technical interviewer. Summarize the candidate's performance across an interview session.
+
+            Role: {role}
+            Attempts (JSON): {attempts_json}
+
+            Provide:
+            - strengths: 3–5 concise bullet-like sentences.
+            - weaknesses: 3–5 concise bullet-like sentences.
+            - readiness: a short assessment of readiness for a real interview, with next steps.
+            - overall_score: an integer from 1 to 10.
+
+            IMPORTANT: The response MUST be in {language} language.
+
+            {format_instructions}
+            """,
+            input_variables=["role", "attempts_json", "language"],
+            partial_variables={"format_instructions": self.summary_parser.get_format_instructions()},
+        )
+        self.summary_chain = self.summary_prompt | self.llm | self.summary_parser
 
     def _get_llm(self):
         if settings.LLM_PROVIDER == "openai":
@@ -89,8 +122,18 @@ class AnswerEvaluator:
                 "language": full_lang
             })
             
+            raw_score = result.get("score", 1)
+            try:
+                score = int(raw_score)
+            except Exception:
+                score = 1
+            if score < 1:
+                score = 1
+            if score > 10:
+                score = 10
+
             return EvaluationResponse(
-                score=result.get("score", 0),
+                score=score,
                 feedback=result.get("feedback", "No feedback generated"),
                 suggestions=result.get("suggestions", []),
                 improved_answer=result.get("improved_answer", "")
@@ -99,11 +142,26 @@ class AnswerEvaluator:
             print(f"Error evaluating answer: {e}")
             # Fallback in case of parsing error or LLM failure
             return EvaluationResponse(
-                score=0,
-                feedback=f"Failed to evaluate answer due to error: {str(e)}",
-                suggestions=["Please try again later."],
+                score=1,
+                feedback="Failed to evaluate the answer due to an internal error. Please try again.",
+                suggestions=["Try again later."],
                 improved_answer=""
             )
+
+    async def summarize_interview(self, role: str, attempts_json: str, language: str = "en") -> dict:
+        lang_map = {"vi": "Vietnamese", "en": "English"}
+        full_lang = lang_map.get(language, "English")
+        result = await self.summary_chain.ainvoke({
+            "role": role if role else "General",
+            "attempts_json": attempts_json,
+            "language": full_lang
+        })
+        return {
+            "strengths": result.get("strengths", ""),
+            "weaknesses": result.get("weaknesses", ""),
+            "readiness": result.get("readiness", ""),
+            "overall_score": result.get("overall_score", 0)
+        }
 
     async def generate_questions(self, topic: str, count: int = 5, level: str = "Medium") -> List[dict]:
         try:

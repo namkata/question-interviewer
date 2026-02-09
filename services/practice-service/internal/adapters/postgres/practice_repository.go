@@ -196,42 +196,100 @@ func (r *PracticeRepository) GetRandomQuestionID(ctx context.Context, topicID *u
 	args = append(args, targetLang)
 	argIdx++
 
+	// 5. Exclude duplicates within the same session (if session_id is provided in config)
+	if config != nil {
+		if rawSessionID, ok := config["session_id"]; ok {
+			parsed, err := uuid.Parse(fmt.Sprint(rawSessionID))
+			if err == nil {
+				whereClauses = append(whereClauses, fmt.Sprintf("q.id NOT IN (SELECT pa.question_id FROM practice_attempts pa WHERE pa.session_id = $%d)", argIdx))
+				args = append(args, parsed)
+				argIdx++
+			}
+		}
+	}
+
 	// Build WHERE string
 	whereStr := " WHERE " + whereClauses[0]
 	for i := 1; i < len(whereClauses); i++ {
 		whereStr += " AND " + whereClauses[i]
 	}
 
-	// 4. Level Logic (With progression, then fallback)
-	if level != nil && *level != "" {
-		targetLevels := []string{*level}
-		switch *level {
+	levelRank := func(l string) int {
+		switch l {
+		case "Any":
+			return 0
 		case "Fresher":
-			targetLevels = append(targetLevels, "Junior")
+			return 1
 		case "Junior":
-			targetLevels = append(targetLevels, "Mid")
+			return 2
 		case "Mid":
-			targetLevels = append(targetLevels, "Senior")
+			return 3
+		case "Senior":
+			return 4
+		default:
+			return -1
 		}
-
-		levelClause := fmt.Sprintf(" AND (q.level = ANY($%d) OR q.level = 'Any')", argIdx)
-		levelQuery := query + whereStr + levelClause + " ORDER BY RANDOM() LIMIT 1"
-		levelArgs := append(args, targetLevels)
-
-		var checkID uuid.UUID
-		err := r.db.QueryRowContext(ctx, levelQuery, levelArgs...).Scan(&checkID)
-		if err == nil {
-			return checkID, nil
-		}
-		// If not found, fall through to fallback
 	}
 
-	// Fallback: Ignore level
-	finalQuery := query + whereStr + " ORDER BY RANDOM() LIMIT 1"
-	finalArgs := args
+	getMinLevel := func() *string {
+		var minLevel *string
 
+		var baseRank int = -1
+		if level != nil && *level != "" {
+			r := levelRank(*level)
+			if r >= 0 {
+				baseRank = r
+				minLevel = level
+			}
+		}
+
+		if config != nil {
+			if rawFloor, ok := config["difficulty_floor"]; ok {
+				floor := fmt.Sprint(rawFloor)
+				r := levelRank(floor)
+				if r >= 0 && r > baseRank {
+					baseRank = r
+					minLevel = &floor
+				}
+			}
+		}
+
+		return minLevel
+	}
+
+	getAllowedLevels := func(minLevel string) []string {
+		minRank := levelRank(minLevel)
+		if minRank <= 0 {
+			return []string{"Any", "Fresher", "Junior", "Mid", "Senior"}
+		}
+
+		levels := []string{"Any"}
+		for _, candidate := range []string{"Fresher", "Junior", "Mid", "Senior"} {
+			if levelRank(candidate) >= minRank {
+				levels = append(levels, candidate)
+			}
+		}
+		return levels
+	}
+
+	if min := getMinLevel(); min != nil && *min != "" && levelRank(*min) >= 0 {
+		levelClause := fmt.Sprintf(" AND q.level = ANY($%d)", argIdx)
+		levelQuery := query + whereStr + levelClause + " ORDER BY RANDOM() LIMIT 1"
+		levelArgs := append(args, getAllowedLevels(*min))
+
+		var id uuid.UUID
+		err := r.db.QueryRowContext(ctx, levelQuery, levelArgs...).Scan(&id)
+		if err == nil {
+			return id, nil
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return uuid.Nil, fmt.Errorf("failed to get random question: %w", err)
+		}
+	}
+
+	finalQuery := query + whereStr + " ORDER BY RANDOM() LIMIT 1"
 	var id uuid.UUID
-	err := r.db.QueryRowContext(ctx, finalQuery, finalArgs...).Scan(&id)
+	err := r.db.QueryRowContext(ctx, finalQuery, args...).Scan(&id)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to get random question: %w", err)
 	}
@@ -240,8 +298,8 @@ func (r *PracticeRepository) GetRandomQuestionID(ctx context.Context, topicID *u
 
 func (r *PracticeRepository) CreateAttempt(ctx context.Context, attempt *domain.PracticeAttempt) error {
 	query := `
-		INSERT INTO practice_attempts (id, session_id, question_id, user_answer, score, feedback, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO practice_attempts (id, session_id, question_id, user_answer, score, feedback, round_index, round_name, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		attempt.ID,
@@ -250,12 +308,52 @@ func (r *PracticeRepository) CreateAttempt(ctx context.Context, attempt *domain.
 		attempt.UserAnswer,
 		attempt.Score,
 		attempt.Feedback,
+		attempt.RoundIndex,
+		attempt.RoundName,
 		attempt.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create attempt: %w", err)
 	}
 	return nil
+}
+
+func (r *PracticeRepository) ListAttemptsBySession(ctx context.Context, sessionID uuid.UUID) ([]*domain.PracticeAttempt, error) {
+	query := `
+		SELECT id, session_id, question_id, user_answer, COALESCE(score, 0), COALESCE(feedback, ''), round_index, round_name, created_at
+		FROM practice_attempts
+		WHERE session_id = $1
+		ORDER BY created_at ASC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list attempts: %w", err)
+	}
+	defer rows.Close()
+
+	var attempts []*domain.PracticeAttempt
+	for rows.Next() {
+		var a domain.PracticeAttempt
+		var roundIndex sql.NullInt32
+		var roundName sql.NullString
+		if err := rows.Scan(&a.ID, &a.SessionID, &a.QuestionID, &a.UserAnswer, &a.Score, &a.Feedback, &roundIndex, &roundName, &a.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan attempt: %w", err)
+		}
+		if roundIndex.Valid {
+			v := int(roundIndex.Int32)
+			a.RoundIndex = &v
+		}
+		if roundName.Valid {
+			v := roundName.String
+			a.RoundName = &v
+		}
+		attempts = append(attempts, &a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate attempts: %w", err)
+	}
+	return attempts, nil
 }
 
 func (r *PracticeRepository) GetQuestionSampleCache(ctx context.Context, questionID uuid.UUID) (string, string, []string, string, error) {

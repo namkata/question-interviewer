@@ -1,5 +1,15 @@
+import json
+
 from fastapi import APIRouter, HTTPException, Depends
-from app.models.schemas import EvaluationRequest, EvaluationResponse, GenerationRequest, GenerationResponse, GeneratedQuestion
+from app.models.schemas import (
+    EvaluationRequest,
+    EvaluationResponse,
+    GenerationRequest,
+    GenerationResponse,
+    GeneratedQuestion,
+    InterviewSummaryRequest,
+    InterviewSummaryResponse,
+)
 from app.services.evaluator import AnswerEvaluator
 
 router = APIRouter()
@@ -43,5 +53,24 @@ async def generate_questions(
             level=request.level
         )
         return GenerationResponse(questions=[GeneratedQuestion(**q) for q in questions])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/summarize", response_model=InterviewSummaryResponse)
+async def summarize_interview(
+    request: InterviewSummaryRequest,
+    evaluator: AnswerEvaluator = Depends(get_evaluator)
+):
+    try:
+        attempts_json = json.dumps(
+            [(a.model_dump() if hasattr(a, "model_dump") else a.dict()) for a in request.attempts],
+            ensure_ascii=False
+        )
+        result = await evaluator.summarize_interview(
+            role=request.role or "General",
+            attempts_json=attempts_json,
+            language=request.language or "en"
+        )
+        return InterviewSummaryResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

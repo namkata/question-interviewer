@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/question-interviewer/practice-service/internal/domain"
@@ -37,26 +38,74 @@ func (s *practiceService) StartSession(ctx context.Context, userID uuid.UUID, to
 	} else {
 		session.Config = make(map[string]interface{})
 	}
+	session.Config["session_id"] = session.ID.String()
 
 	// 1. Initialize Rounds if in Interview Mode
-	if mode, ok := config["mode"].(string); ok && mode == "interview" {
-		role := "BackEnd" // default
-		if r, ok := config["role"].(string); ok && r != "" {
+	if mode, ok := session.Config["mode"].(string); ok && mode == "interview" {
+		role := "BackEnd"
+		if r, ok := session.Config["role"].(string); ok && r != "" {
 			role = r
 		}
 
-		rounds := getRoundsForRole(role)
+		ensureRounds := func() []map[string]interface{} {
+			var out []map[string]interface{}
+
+			if raw, ok := session.Config["rounds"]; ok && raw != nil {
+				if list, ok := raw.([]interface{}); ok {
+					for i, v := range list {
+						if m, ok := v.(map[string]interface{}); ok {
+							out = append(out, m)
+							continue
+						}
+						name := strings.TrimSpace(fmt.Sprint(v))
+						out = append(out, map[string]interface{}{"name": name, "topic": name, "count": 2})
+						_ = i
+					}
+				}
+			}
+
+			if len(out) == 0 {
+				roundNames := getRoundsForRole(role)
+				for _, name := range roundNames {
+					out = append(out, map[string]interface{}{"name": name, "topic": name, "count": 2})
+				}
+			}
+
+			for i := range out {
+				if _, ok := out[i]["id"]; !ok {
+					out[i]["id"] = fmt.Sprintf("%d", i)
+				}
+				if _, ok := out[i]["topic"]; !ok {
+					out[i]["topic"] = out[i]["name"]
+				}
+				status := "pending"
+				if i == 0 {
+					status = "in_progress"
+				}
+				out[i]["status"] = status
+			}
+
+			return out
+		}
+
+		if _, ok := session.Config["questions_per_round"]; !ok {
+			session.Config["questions_per_round"] = 2
+		}
+
+		rounds := ensureRounds()
 		session.Config["rounds"] = rounds
 		session.Config["current_round_index"] = 0
+		session.Config["current_round_question_index"] = 0
 
-		// Override topicID for the first round
-		if len(rounds) > 0 {
-			firstRound := rounds[0]
-			tID, err := s.repo.GetTopicIDByName(ctx, firstRound)
+		firstTopic := strings.TrimSpace(fmt.Sprint(rounds[0]["topic"]))
+		if firstTopic == "" {
+			firstTopic = strings.TrimSpace(fmt.Sprint(rounds[0]["name"]))
+		}
+		if firstTopic != "" {
+			tID, err := s.repo.GetTopicIDByName(ctx, firstTopic)
 			if err == nil {
 				topicID = &tID
 			}
-			// If error (topic not found), we might fall back to nil topicID and let GetRandomQuestionID handle it based on role/stack
 		}
 	}
 
@@ -71,6 +120,12 @@ func (s *practiceService) StartSession(ctx context.Context, userID uuid.UUID, to
 		// But maybe we return session and empty question ID if none found?
 		// Let's return error for now.
 		return nil, uuid.Nil, fmt.Errorf("failed to get initial question: %w", err)
+	}
+
+	_, _, qLevel, _, _, err := s.repo.GetQuestionContent(ctx, questionID)
+	if err == nil && strings.TrimSpace(qLevel) != "" {
+		session.Config["difficulty_floor"] = qLevel
+		_ = s.repo.UpdateSession(ctx, session)
 	}
 
 	return session, questionID, nil
@@ -155,10 +210,50 @@ func (s *practiceService) SubmitAnswer(ctx context.Context, sessionID, questionI
 
 	// 4. Create Attempt
 	attempt := domain.NewPracticeAttempt(sessionID, questionID, answerContent)
+	attempt.QuestionContent = &qContent
 	attempt.Score = score
 	attempt.Feedback = feedbackText
 	attempt.Suggestions = suggestions
 	attempt.ImprovedAnswer = improvedAnswer
+
+	if session.Config == nil {
+		session.Config = make(map[string]interface{})
+	}
+	session.Config["session_id"] = session.ID.String()
+	if strings.TrimSpace(qLevel) != "" {
+		session.Config["difficulty_floor"] = qLevel
+	}
+
+	if mode, ok := session.Config["mode"].(string); ok && mode == "interview" {
+		currentIdx := 0
+		switch idx := session.Config["current_round_index"].(type) {
+		case float64:
+			currentIdx = int(idx)
+		case int:
+			currentIdx = idx
+		case int64:
+			currentIdx = int(idx)
+		}
+		attempt.RoundIndex = &currentIdx
+
+		roundsAny := []interface{}{}
+		switch v := session.Config["rounds"].(type) {
+		case []interface{}:
+			roundsAny = v
+		case []map[string]interface{}:
+			for _, m := range v {
+				roundsAny = append(roundsAny, m)
+			}
+		}
+
+		if currentIdx >= 0 && currentIdx < len(roundsAny) {
+			if roundObj, ok := roundsAny[currentIdx].(map[string]interface{}); ok {
+				if name, ok := roundObj["name"].(string); ok && name != "" {
+					attempt.RoundName = &name
+				}
+			}
+		}
+	}
 
 	if err := s.repo.CreateAttempt(ctx, attempt); err != nil {
 		return nil, uuid.Nil, fmt.Errorf("failed to save attempt: %w", err)
@@ -166,51 +261,124 @@ func (s *practiceService) SubmitAnswer(ctx context.Context, sessionID, questionI
 
 	// 5. Update Session Score
 	session.Score += score
-	if err := s.repo.UpdateSession(ctx, session); err != nil {
-		// Non-critical error
-		fmt.Printf("Failed to update session score: %v\n", err)
-	}
 
 	// 6. Get Next Question
 	var nextQuestionID uuid.UUID
 
 	if mode, ok := session.Config["mode"].(string); ok && mode == "interview" {
-		// Advance round logic
-		rounds := []string{}
-		if r, ok := session.Config["rounds"].([]interface{}); ok {
-			for _, v := range r {
-				rounds = append(rounds, fmt.Sprint(v))
+		rounds := []interface{}{}
+		switch v := session.Config["rounds"].(type) {
+		case []interface{}:
+			rounds = v
+		case []map[string]interface{}:
+			for _, m := range v {
+				rounds = append(rounds, m)
 			}
 		}
 
-		currentIdx := 0
-		if idx, ok := session.Config["current_round_index"].(float64); ok {
-			currentIdx = int(idx)
+		currentRoundIdx := 0
+		switch idx := session.Config["current_round_index"].(type) {
+		case float64:
+			currentRoundIdx = int(idx)
+		case int:
+			currentRoundIdx = idx
+		case int64:
+			currentRoundIdx = int(idx)
 		}
 
-		nextIdx := currentIdx + 1
-		if nextIdx < len(rounds) {
-			session.Config["current_round_index"] = nextIdx
+		answeredInRound := 0
+		switch idx := session.Config["current_round_question_index"].(type) {
+		case float64:
+			answeredInRound = int(idx)
+		case int:
+			answeredInRound = idx
+		case int64:
+			answeredInRound = int(idx)
+		}
+		answeredInRound++
 
-			// Update session config in DB (persist progress)
-			if err := s.repo.UpdateSession(ctx, session); err != nil {
-				fmt.Printf("Failed to update session config for next round: %v\n", err)
+		questionsPerRound := 2
+		if currentRoundIdx >= 0 && currentRoundIdx < len(rounds) {
+			if roundObj, ok := rounds[currentRoundIdx].(map[string]interface{}); ok {
+				switch v := roundObj["count"].(type) {
+				case float64:
+					if int(v) > 0 {
+						questionsPerRound = int(v)
+					}
+				case int:
+					if v > 0 {
+						questionsPerRound = v
+					}
+				case int64:
+					if int(v) > 0 {
+						questionsPerRound = int(v)
+					}
+				}
 			}
+		}
+		if questionsPerRound <= 0 {
+			questionsPerRound = 2
+		}
+		switch v := session.Config["questions_per_round"].(type) {
+		case float64:
+			if questionsPerRound == 2 && int(v) > 0 {
+				questionsPerRound = int(v)
+			}
+		case int:
+			if questionsPerRound == 2 && v > 0 {
+				questionsPerRound = v
+			}
+		case int64:
+			if questionsPerRound == 2 && int(v) > 0 {
+				questionsPerRound = int(v)
+			}
+		}
 
-			nextTopicName := rounds[nextIdx]
-			tID, err := s.repo.GetTopicIDByName(ctx, nextTopicName)
-			if err == nil {
-				// Use the specific topic ID for this round
-				nextQuestionID, err = s.repo.GetRandomQuestionID(ctx, &tID, session.Level, session.Language, session.Config)
-				if err != nil {
-					nextQuestionID = uuid.Nil
+		advanceRound := answeredInRound >= questionsPerRound
+		if advanceRound {
+			session.Config["current_round_question_index"] = 0
+		} else {
+			session.Config["current_round_question_index"] = answeredInRound
+		}
+
+		nextRoundIdx := currentRoundIdx
+		if advanceRound {
+			if currentRoundIdx >= 0 && currentRoundIdx < len(rounds) {
+				if roundObj, ok := rounds[currentRoundIdx].(map[string]interface{}); ok {
+					roundObj["status"] = "completed"
+				}
+			}
+			nextRoundIdx = currentRoundIdx + 1
+			session.Config["current_round_index"] = nextRoundIdx
+		}
+
+		if nextRoundIdx < len(rounds) {
+			if roundObj, ok := rounds[nextRoundIdx].(map[string]interface{}); ok {
+				roundObj["status"] = "in_progress"
+				topic := strings.TrimSpace(fmt.Sprint(roundObj["topic"]))
+				if topic == "" {
+					topic = strings.TrimSpace(fmt.Sprint(roundObj["name"]))
+				}
+				if topic != "" {
+					tID, err := s.repo.GetTopicIDByName(ctx, topic)
+					if err == nil {
+						nextQuestionID, err = s.repo.GetRandomQuestionID(ctx, &tID, session.Level, session.Language, session.Config)
+						if err != nil {
+							nextQuestionID = uuid.Nil
+						}
+					} else {
+						nextQuestionID, _ = s.repo.GetRandomQuestionID(ctx, nil, session.Level, session.Language, session.Config)
+					}
+				} else {
+					nextQuestionID, _ = s.repo.GetRandomQuestionID(ctx, nil, session.Level, session.Language, session.Config)
 				}
 			} else {
-				// Topic not found? Fallback to random without specific topic
 				nextQuestionID, _ = s.repo.GetRandomQuestionID(ctx, nil, session.Level, session.Language, session.Config)
 			}
 		} else {
-			// Finished all rounds
+			now := time.Now()
+			session.Status = "completed"
+			session.EndedAt = &now
 			nextQuestionID = uuid.Nil
 		}
 	} else {
@@ -219,6 +387,17 @@ func (s *practiceService) SubmitAnswer(ctx context.Context, sessionID, questionI
 		if err != nil {
 			nextQuestionID = uuid.Nil
 		}
+	}
+
+	if nextQuestionID != uuid.Nil {
+		_, _, nextLevel, _, _, err := s.repo.GetQuestionContent(ctx, nextQuestionID)
+		if err == nil && strings.TrimSpace(nextLevel) != "" {
+			session.Config["difficulty_floor"] = nextLevel
+		}
+	}
+
+	if err := s.repo.UpdateSession(ctx, session); err != nil {
+		fmt.Printf("Failed to update session: %v\n", err)
 	}
 
 	return attempt, nextQuestionID, nil
@@ -293,45 +472,81 @@ func (s *practiceService) SkipCurrentRound(ctx context.Context, sessionID uuid.U
 	var nextQuestionID uuid.UUID
 
 	if mode, ok := session.Config["mode"].(string); ok && mode == "interview" {
-		rounds := []string{}
-		if r, ok := session.Config["rounds"].([]interface{}); ok {
-			for _, v := range r {
-				rounds = append(rounds, fmt.Sprint(v))
+		session.Config["session_id"] = session.ID.String()
+
+		rounds := []interface{}{}
+		switch v := session.Config["rounds"].(type) {
+		case []interface{}:
+			rounds = v
+		case []map[string]interface{}:
+			for _, m := range v {
+				rounds = append(rounds, m)
 			}
 		}
 
 		currentIdx := 0
-		if idx, ok := session.Config["current_round_index"].(float64); ok {
+		switch idx := session.Config["current_round_index"].(type) {
+		case float64:
+			currentIdx = int(idx)
+		case int:
+			currentIdx = idx
+		case int64:
 			currentIdx = int(idx)
 		}
 
-		nextIdx := currentIdx + 1
-		if nextIdx < len(rounds) {
-			session.Config["current_round_index"] = nextIdx
-
-			// Update session config in DB (persist progress)
-			if err := s.repo.UpdateSession(ctx, session); err != nil {
-				return uuid.Nil, fmt.Errorf("failed to update session config: %w", err)
+		if currentIdx >= 0 && currentIdx < len(rounds) {
+			if roundObj, ok := rounds[currentIdx].(map[string]interface{}); ok {
+				roundObj["status"] = "skipped"
 			}
+		}
 
-			nextTopicName := rounds[nextIdx]
-			tID, err := s.repo.GetTopicIDByName(ctx, nextTopicName)
-			if err == nil {
-				// Use the specific topic ID for this round
-				nextQuestionID, err = s.repo.GetRandomQuestionID(ctx, &tID, session.Level, session.Language, session.Config)
-				if err != nil {
-					nextQuestionID = uuid.Nil
+		nextIdx := currentIdx + 1
+		session.Config["current_round_index"] = nextIdx
+		session.Config["current_round_question_index"] = 0
+
+		if nextIdx < len(rounds) {
+			if roundObj, ok := rounds[nextIdx].(map[string]interface{}); ok {
+				roundObj["status"] = "in_progress"
+				topic := strings.TrimSpace(fmt.Sprint(roundObj["topic"]))
+				if topic == "" {
+					topic = strings.TrimSpace(fmt.Sprint(roundObj["name"]))
+				}
+				if topic != "" {
+					tID, err := s.repo.GetTopicIDByName(ctx, topic)
+					if err == nil {
+						nextQuestionID, err = s.repo.GetRandomQuestionID(ctx, &tID, session.Level, session.Language, session.Config)
+						if err != nil {
+							nextQuestionID = uuid.Nil
+						}
+					} else {
+						nextQuestionID, _ = s.repo.GetRandomQuestionID(ctx, nil, session.Level, session.Language, session.Config)
+					}
+				} else {
+					nextQuestionID, _ = s.repo.GetRandomQuestionID(ctx, nil, session.Level, session.Language, session.Config)
 				}
 			} else {
-				// Topic not found? Fallback to random without specific topic
 				nextQuestionID, _ = s.repo.GetRandomQuestionID(ctx, nil, session.Level, session.Language, session.Config)
 			}
 		} else {
-			// Finished all rounds
+			now := time.Now()
+			session.Status = "completed"
+			session.EndedAt = &now
 			nextQuestionID = uuid.Nil
+		}
+
+		if nextQuestionID != uuid.Nil {
+			_, _, nextLevel, _, _, err := s.repo.GetQuestionContent(ctx, nextQuestionID)
+			if err == nil && strings.TrimSpace(nextLevel) != "" {
+				session.Config["difficulty_floor"] = nextLevel
+			}
+		}
+
+		if err := s.repo.UpdateSession(ctx, session); err != nil {
+			return uuid.Nil, fmt.Errorf("failed to update session config: %w", err)
 		}
 	} else {
 		// Normal Practice Mode: Just get another question
+		session.Config["session_id"] = session.ID.String()
 		nextQuestionID, err = s.repo.GetRandomQuestionID(ctx, session.TopicID, session.Level, session.Language, session.Config)
 		if err != nil {
 			nextQuestionID = uuid.Nil
@@ -363,6 +578,10 @@ func (s *practiceService) GetRandomQuestion(ctx context.Context, sessionID uuid.
 	}
 
 	// 3. Get Random Question
+	if session.Config == nil {
+		session.Config = make(map[string]interface{})
+	}
+	session.Config["session_id"] = session.ID.String()
 	id, err := s.repo.GetRandomQuestionID(ctx, topicID, session.Level, session.Language, session.Config)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to get random question: %w", err)
@@ -407,4 +626,121 @@ func (s *practiceService) CreateQuestion(ctx context.Context, content, topic, le
 		return nil, fmt.Errorf("failed to create question: %w", err)
 	}
 	return question, nil
+}
+
+func (s *practiceService) ListAttempts(ctx context.Context, sessionID uuid.UUID) ([]*domain.PracticeAttempt, error) {
+	return s.repo.ListAttemptsBySession(ctx, sessionID)
+}
+
+func (s *practiceService) GetSessionSummary(ctx context.Context, sessionID uuid.UUID, language string) (map[string]interface{}, error) {
+	session, err := s.repo.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session not found: %w", err)
+	}
+
+	attempts, err := s.repo.ListAttemptsBySession(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list attempts: %w", err)
+	}
+
+	type roundAgg struct {
+		sum   int
+		count int
+	}
+
+	aggByName := map[string]*roundAgg{}
+	for _, a := range attempts {
+		name := "General"
+		if a.RoundName != nil && *a.RoundName != "" {
+			name = *a.RoundName
+		}
+		if _, ok := aggByName[name]; !ok {
+			aggByName[name] = &roundAgg{}
+		}
+		aggByName[name].sum += a.Score
+		aggByName[name].count++
+	}
+
+	roundsOut := make([]map[string]interface{}, 0)
+	if mode, ok := session.Config["mode"].(string); ok && mode == "interview" {
+		roundsAny := []interface{}{}
+		switch v := session.Config["rounds"].(type) {
+		case []interface{}:
+			roundsAny = v
+		case []map[string]interface{}:
+			for _, m := range v {
+				roundsAny = append(roundsAny, m)
+			}
+		}
+
+		for i, r := range roundsAny {
+			roundObj, ok := r.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			name, _ := roundObj["name"].(string)
+			id, _ := roundObj["id"].(string)
+			status, _ := roundObj["status"].(string)
+			a := aggByName[name]
+			avg := 0.0
+			count := 0
+			if a != nil && a.count > 0 {
+				avg = float64(a.sum) / float64(a.count)
+				count = a.count
+			}
+			roundsOut = append(roundsOut, map[string]interface{}{
+				"index":         i,
+				"id":            id,
+				"name":          name,
+				"status":        status,
+				"attempt_count": count,
+				"avg_score":     avg,
+			})
+		}
+	}
+
+	overallAvg := 0.0
+	if len(attempts) > 0 {
+		sum := 0
+		for _, a := range attempts {
+			sum += a.Score
+		}
+		overallAvg = float64(sum) / float64(len(attempts))
+	}
+
+	role := ""
+	if v, ok := session.Config["role"].(string); ok {
+		role = v
+	}
+	if language == "" {
+		language = session.Language
+	}
+	if language == "" {
+		language = "en"
+	}
+
+	summary := map[string]interface{}{
+		"session_id":    session.ID,
+		"status":        session.Status,
+		"overall_score": overallAvg,
+		"rounds":        roundsOut,
+	}
+
+	if s.aiEnabled && s.ai != nil {
+		attemptVals := make([]domain.PracticeAttempt, 0, len(attempts))
+		for _, a := range attempts {
+			attemptVals = append(attemptVals, *a)
+		}
+		strengths, weaknesses, readiness, overallScore, err := s.ai.SummarizeInterview(ctx, role, language, attemptVals)
+		if err == nil {
+			summary["ai_summary"] = map[string]interface{}{
+				"strengths":     strengths,
+				"weaknesses":    weaknesses,
+				"readiness":     readiness,
+				"overall_score": overallScore,
+			}
+		}
+	}
+
+	return summary, nil
 }

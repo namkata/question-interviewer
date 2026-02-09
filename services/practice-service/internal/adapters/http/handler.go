@@ -132,6 +132,41 @@ func (h *PracticeHandler) GetSession(c *gin.Context) {
 	c.JSON(http.StatusOK, session)
 }
 
+func (h *PracticeHandler) ListAttempts(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := uuid.Parse(sessionIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid session ID format"})
+		return
+	}
+
+	attempts, err := h.service.ListAttempts(c.Request.Context(), sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"attempts": attempts})
+}
+
+func (h *PracticeHandler) GetSessionSummary(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := uuid.Parse(sessionIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid session ID format"})
+		return
+	}
+
+	lang := c.Query("language")
+	summary, err := h.service.GetSessionSummary(c.Request.Context(), sessionID, lang)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, summary)
+}
+
 func (h *PracticeHandler) GetQuestion(c *gin.Context) {
 	questionIDStr := c.Param("id")
 	questionID, err := uuid.Parse(questionIDStr)
@@ -237,6 +272,8 @@ func (h *PracticeHandler) RegisterRoutes(r *gin.Engine) {
 	{
 		api.POST("/sessions", h.StartSession)
 		api.GET("/sessions/:id", h.GetSession)
+		api.GET("/sessions/:id/attempts", h.ListAttempts)
+		api.GET("/sessions/:id/summary", h.GetSessionSummary)
 		api.POST("/sessions/:id/answers", h.SubmitAnswer)
 		api.POST("/sessions/:id/skip", h.SkipRound)
 		api.GET("/sessions/:id/questions/random", h.GetRandomQuestionForSession)

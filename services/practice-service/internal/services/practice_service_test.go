@@ -30,6 +30,9 @@ func (r *fakeRepo) UpdateSession(ctx context.Context, session *domain.PracticeSe
 func (r *fakeRepo) CreateAttempt(ctx context.Context, attempt *domain.PracticeAttempt) error {
 	return nil
 }
+func (r *fakeRepo) ListAttemptsBySession(ctx context.Context, sessionID uuid.UUID) ([]*domain.PracticeAttempt, error) {
+	return nil, errors.New("not implemented")
+}
 func (r *fakeRepo) GetQuestionSampleCache(ctx context.Context, questionID uuid.UUID) (string, string, []string, string, error) {
 	return "", "", nil, "", nil
 }
@@ -62,6 +65,13 @@ func (a *fakeAI) EvaluateAnswer(ctx context.Context, question, userAnswer, corre
 		return 0, "", nil, "", a.err
 	}
 	return a.score, a.feedback, a.suggestions, a.improvedAnswer, nil
+}
+
+func (a *fakeAI) SummarizeInterview(ctx context.Context, role, language string, attempts []domain.PracticeAttempt) (string, string, string, int, error) {
+	if a.err != nil {
+		return "", "", "", 0, a.err
+	}
+	return "", "", "", 0, nil
 }
 
 var _ ports.PracticeRepository = (*fakeRepo)(nil)

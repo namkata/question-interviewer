@@ -30,7 +30,12 @@ func (h *BFFHandler) RegisterRoutes(r *gin.Engine) {
 		api.POST("/sessions", h.StartSession)
 		api.GET("/sessions/:id", h.GetSession)
 		api.POST("/sessions/:id/answers", h.SubmitAnswer)
+		api.POST("/sessions/:id/skip", h.SkipRound)
+		api.GET("/sessions/:id/attempts", h.ListAttempts)
+		api.GET("/sessions/:id/summary", h.GetSessionSummary)
+		api.GET("/sessions/:id/questions/random", h.GetRandomQuestionForSession)
 		api.GET("/questions/:id", h.GetQuestion)
+		api.POST("/questions/:id/suggest", h.SuggestAnswer)
 	}
 }
 
@@ -99,5 +104,46 @@ func (h *BFFHandler) SubmitAnswer(c *gin.Context) {
 	}
 
 	url := fmt.Sprintf("%s/api/v1/practice/sessions/%s/answers", h.practiceServiceURL, sessionID)
+	h.proxyRequest(c, "POST", url, body)
+}
+
+func (h *BFFHandler) SkipRound(c *gin.Context) {
+	sessionID := c.Param("id")
+	url := fmt.Sprintf("%s/api/v1/practice/sessions/%s/skip", h.practiceServiceURL, sessionID)
+	h.proxyRequest(c, "POST", url, nil)
+}
+
+func (h *BFFHandler) ListAttempts(c *gin.Context) {
+	sessionID := c.Param("id")
+	url := fmt.Sprintf("%s/api/v1/practice/sessions/%s/attempts", h.practiceServiceURL, sessionID)
+	h.proxyRequest(c, "GET", url, nil)
+}
+
+func (h *BFFHandler) GetSessionSummary(c *gin.Context) {
+	sessionID := c.Param("id")
+	url := fmt.Sprintf("%s/api/v1/practice/sessions/%s/summary", h.practiceServiceURL, sessionID)
+	if c.Request.URL.RawQuery != "" {
+		url = url + "?" + c.Request.URL.RawQuery
+	}
+	h.proxyRequest(c, "GET", url, nil)
+}
+
+func (h *BFFHandler) GetRandomQuestionForSession(c *gin.Context) {
+	sessionID := c.Param("id")
+	url := fmt.Sprintf("%s/api/v1/practice/sessions/%s/questions/random", h.practiceServiceURL, sessionID)
+	if c.Request.URL.RawQuery != "" {
+		url = url + "?" + c.Request.URL.RawQuery
+	}
+	h.proxyRequest(c, "GET", url, nil)
+}
+
+func (h *BFFHandler) SuggestAnswer(c *gin.Context) {
+	questionID := c.Param("id")
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+	url := fmt.Sprintf("%s/api/v1/practice/questions/%s/suggest", h.practiceServiceURL, questionID)
 	h.proxyRequest(c, "POST", url, body)
 }
